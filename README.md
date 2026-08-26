@@ -1,7 +1,7 @@
 # Mayhem
 
 A third-party agent for the [Havoc](https://github.com/HavocFramework/Havoc) C2
-framework, built for Talon.
+framework
 
 `handler.py` runs a service client that connects to a Havoc teamserver's
 3rd-party service endpoint and registers the `Mayhem` agent type with it.
