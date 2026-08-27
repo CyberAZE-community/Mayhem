@@ -23,3 +23,9 @@ __pycache__/
 *.exe
 dist/
 build/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile

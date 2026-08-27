@@ -104,9 +104,9 @@ class Mayhem(AgentType):
         self.builder_send_message( config[ 'ClientID' ], "Info", f"Options Config: {config['Options']}" )
         self.builder_send_message( config[ 'ClientID' ], "Info", f"Agent Config: {config['Config']}" )
 
-        os.system("cmake . && make")
+        os.system("cd Agent && cmake . && make")
 
-        data = open("./Bin/mayo.exe", "rb").read()
+        data = open("./Agent/mayo.exe", "rb").read()
 
         self.builder_send_payload( config[ 'ClientID' ], self.Name + ".exe", data)
 
