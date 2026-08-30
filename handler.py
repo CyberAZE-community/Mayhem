@@ -16,6 +16,7 @@ COMMAND_SHELL          = 0x152
 COMMAND_UPLOAD         = 0x153
 COMMAND_DOWNLOAD       = 0x154
 COMMAND_EXIT           = 0x155
+COMMAND_PROCLIST       = 0x156
 
 class MayhemShell(Command):
     Name        = "shell"
@@ -71,6 +72,20 @@ class MayhemDownload(Command):
         packer.add_data(arguments["remote_path"])
         return packer.get_buffer()
 
+class MayhemProcList(Command):
+    Name        = "proclist"
+    Description = "list running processes"
+    Help        = "proclist"
+    NeedAdmin   = False
+    Mitr        = []
+    Params      = []
+    CommandId   = COMMAND_PROCLIST
+
+    def job_generate(self, arguments: dict) -> bytes:
+        packer = Packer()
+        packer.add_int(self.CommandId)
+        return packer.get_buffer()
+
 class MayhemExit(Command):
     Name        = "exit"
     Description = "terminate the agent"
@@ -94,7 +109,7 @@ class Mayhem(AgentType):
     Arch = ["x64"]
     Formats = [{"Name": "Windows Executable", "Extension": "exe"}]
     BuildingConfig = {"Sleep": "10"}
-    Commands = [MayhemShell(), MayhemUpload(), MayhemDownload(), MayhemExit()]
+    Commands = [MayhemShell(), MayhemUpload(), MayhemDownload(), MayhemProcList(), MayhemExit()]
 
     #builds the payload that the client requests. For example, if you select exe paylaod from ui, this builds the exe for you.
     def generate (self, config: dict) -> None:

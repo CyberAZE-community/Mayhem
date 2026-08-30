@@ -72,6 +72,7 @@ Update `CONFIG_HOST` and `CONFIG_PORT` in `Main.c` to point at the teamserver li
 | shell | 0x152 | Execute a shell command via cmd.exe |
 | upload | 0x153 | Upload a file to the target |
 | download | 0x154 | Download a file from the target |
+| proclist | 0x156 | List running processes (PID, PPID, name) |
 | exit | 0x155 | Terminate the agent |
 
 ## Layout
