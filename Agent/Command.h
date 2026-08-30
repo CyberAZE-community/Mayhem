@@ -11,6 +11,7 @@
 #define COMMAND_UPLOAD      0x153
 #define COMMAND_DOWNLOAD    0x154
 #define COMMAND_EXIT        0x155
+#define COMMAND_PROCLIST    0x156
 
 #define ENDIAN_BIG      0
 #define ENDIAN_LITTLE   1
@@ -40,5 +41,6 @@ VOID    CommandShell(PTASK_PARSER Parser);
 VOID    CommandUpload(PTASK_PARSER Parser);
 VOID    CommandDownload(PTASK_PARSER Parser);
 VOID    CommandExit(PTASK_PARSER Parser);
+VOID    CommandProcList(PTASK_PARSER Parser);
 
 #endif

