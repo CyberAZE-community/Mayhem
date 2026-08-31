@@ -10,6 +10,7 @@ add_executable(mayo
     Command.c
     Package.c
     Transport.c
+    Resolve.c
 )
 
 target_link_libraries(mayo winhttp iphlpapi)

