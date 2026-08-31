@@ -1,7 +1,7 @@
 #include "Resolve.h"
 #include <ctype.h>
 
-// jenkins
+// jenkins 
 DWORD HashStringA(PCHAR str) {
 	DWORD h = 0;
 	while (*str) {
