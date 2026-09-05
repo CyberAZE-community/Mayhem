@@ -28,6 +28,10 @@
 #define H_GetTickCount			0xA5C1F9B7
 #define H_Sleep				0xC57A081D
 #define H_ExitProcess			0xCB11CBC6
+#define H_OpenProcess			0xC88D2AEC
+#define H_VirtualAllocEx		0x66E2C7CE
+#define H_WriteProcessMemory		0xBADBB20B
+#define H_CreateRemoteThread		0x95FEA306
 #define H_GetNativeSystemInfo		0x90A26E0F
 #define H_GetModuleHandleA		0x54C332DA
 #define H_GetProcAddress		0x84C96E3E
