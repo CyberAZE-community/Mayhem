@@ -11,5 +11,6 @@ typedef struct _TRANSPORT_CFG {
 } TRANSPORT_CFG, *PTRANSPORT_CFG;
 
 BOOL TransportSend(LPVOID Data, SIZE_T Size, PVOID* RecvData, PSIZE_T RecvSize);
+PUCHAR FetchPayload(LPCWSTR Endpoint, PDWORD OutLen);
 
 #endif
