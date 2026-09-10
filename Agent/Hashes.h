@@ -30,6 +30,8 @@
 #define H_ExitProcess			0xCB11CBC6
 #define H_OpenProcess			0xC88D2AEC
 #define H_VirtualAllocEx		0x66E2C7CE
+#define H_VirtualProtect		0xB40194F8
+#define H_VirtualAlloc			0xF625556A
 #define H_WriteProcessMemory		0xBADBB20B
 #define H_CreateRemoteThread		0x95FEA306
 #define H_GetNativeSystemInfo		0x90A26E0F
@@ -39,6 +41,13 @@
 
 #define H_RtlGetVersion			0xFFB66EDE
 #define H_RtlRandomEx			0x4FCDAC4F
+
+#define H_EtwEventWrite			0x97F72F81
+#define H_EtwEventWriteFull		0xA9FF6776
+#define H_EtwEventWriteEx		0x2E100206
+#define H_EtwEventWriteString		0x841A71B0
+#define H_EtwEventWriteTransfer		0x585BD082
+#define H_NtTraceEvent			0x9DF5F434
 
 #define H_GetAdaptersInfo		0xD73288B5
 

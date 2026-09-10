@@ -11,6 +11,9 @@ add_executable(mayo
     Package.c
     Transport.c
     Resolve.c
+    Evasion.c
+    Syscall.c
+    Unhook.c
 )
 
 target_link_libraries(mayo winhttp iphlpapi)

