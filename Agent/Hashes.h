@@ -37,6 +37,25 @@
 #define H_GetProcAddress		0x84C96E3E
 #define H_LoadLibraryA			0x19F0EEAF
 
+#define H_OpenProcessToken		0x819BD5BD
+#define H_GetTokenInformation		0x19F25F05
+#define H_ConvertSidToStringSidA	0xE5389DBB
+#define H_LookupPrivilegeNameA		0xCE64C8D3
+#define H_LookupAccountSidA		0xFF9D8FEF
+#define H_GetSidSubAuthority		0xC9155E84
+#define H_GetSidSubAuthorityCount	0x1FE84F3C
+#define H_GetCurrentProcess		0x26C2CE8D
+#define H_GetTickCount64		0xA8F7330F
+#define H_GlobalMemoryStatusEx		0x7CF2036B
+
+#define H_NETAPI32			0xCE87FB51
+#define H_PSAPI				0xBE045658
+#define H_NetShareEnumA			0x3BED3FA1
+#define H_NetSessionEnumA		0x69420E88
+#define H_NetApiBufferFree		0x46FDDD9E
+#define H_EnumDeviceDrivers		0x45E078F5
+#define H_GetDeviceDriverBaseNameA	0x835E1EFA
+
 #define H_RtlGetVersion			0xFFB66EDE
 #define H_RtlRandomEx			0x4FCDAC4F
 

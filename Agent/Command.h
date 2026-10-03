@@ -13,6 +13,12 @@
 #define COMMAND_EXIT        0x155
 #define COMMAND_PROCLIST    0x156
 #define COMMAND_INJECT_DLL  0x157
+#define COMMAND_SYSINFO     0x158
+#define COMMAND_WHOAMI      0x159
+#define COMMAND_NET_ENUM    0x15A
+#define COMMAND_SHARES      0x15B
+#define COMMAND_LOGONS      0x15C
+#define COMMAND_AVENUM      0x15D
 
 #define ENDIAN_BIG      0
 #define ENDIAN_LITTLE   1
@@ -44,5 +50,11 @@ VOID    CommandDownload(PTASK_PARSER Parser);
 VOID    CommandExit(PTASK_PARSER Parser);
 VOID    CommandProcList(PTASK_PARSER Parser);
 VOID    CommandInjectDLL(PTASK_PARSER Parser);
+VOID    CommandSysInfo(PTASK_PARSER Parser);
+VOID    CommandWhoami(PTASK_PARSER Parser);
+VOID    CommandNetEnum(PTASK_PARSER Parser);
+VOID    CommandShares(PTASK_PARSER Parser);
+VOID    CommandLogons(PTASK_PARSER Parser);
+VOID    CommandAvEnum(PTASK_PARSER Parser);
 
 #endif
