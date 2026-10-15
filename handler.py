@@ -18,6 +18,12 @@ COMMAND_DOWNLOAD       = 0x154
 COMMAND_EXIT           = 0x155
 COMMAND_PROCLIST       = 0x156
 COMMAND_INJECT_DLL     = 0x157
+COMMAND_SYSINFO        = 0x158
+COMMAND_WHOAMI         = 0x159
+COMMAND_NET_ENUM       = 0x15A
+COMMAND_SHARES         = 0x15B
+COMMAND_LOGONS         = 0x15C
+COMMAND_AVENUM         = 0x15D
 
 class MayhemShell(Command):
     Name        = "shell"
@@ -106,6 +112,90 @@ class MayhemInjectDLL(Command):
         packer.add_data(arguments["dll_path"])
         return packer.get_buffer()
 
+class MayhemSysInfo(Command):
+    Name        = "sysinfo"
+    Description = "host / os / arch / mem / uptime / elevated"
+    Help        = "sysinfo"
+    NeedAdmin   = False
+    Mitr        = []
+    Params      = []
+    CommandId   = COMMAND_SYSINFO
+
+    def job_generate(self, arguments: dict) -> bytes:
+        packer = Packer()
+        packer.add_int(self.CommandId)
+        return packer.get_buffer()
+
+class MayhemWhoami(Command):
+    Name        = "whoami"
+    Description = "current user, sid, integrity, privileges, groups"
+    Help        = "whoami"
+    NeedAdmin   = False
+    Mitr        = []
+    Params      = []
+    CommandId   = COMMAND_WHOAMI
+
+    def job_generate(self, arguments: dict) -> bytes:
+        packer = Packer()
+        packer.add_int(self.CommandId)
+        return packer.get_buffer()
+
+class MayhemNetEnum(Command):
+    Name        = "net_enum"
+    Description = "domain users / groups / computers / time"
+    Help        = "net_enum"
+    NeedAdmin   = False
+    Mitr        = []
+    Params      = []
+    CommandId   = COMMAND_NET_ENUM
+
+    def job_generate(self, arguments: dict) -> bytes:
+        packer = Packer()
+        packer.add_int(self.CommandId)
+        return packer.get_buffer()
+
+class MayhemShares(Command):
+    Name        = "shares"
+    Description = "list local smb shares"
+    Help        = "shares"
+    NeedAdmin   = False
+    Mitr        = []
+    Params      = []
+    CommandId   = COMMAND_SHARES
+
+    def job_generate(self, arguments: dict) -> bytes:
+        packer = Packer()
+        packer.add_int(self.CommandId)
+        return packer.get_buffer()
+
+class MayhemLogons(Command):
+    Name        = "logons"
+    Description = "list logon sessions"
+    Help        = "logons"
+    NeedAdmin   = True
+    Mitr        = []
+    Params      = []
+    CommandId   = COMMAND_LOGONS
+
+    def job_generate(self, arguments: dict) -> bytes:
+        packer = Packer()
+        packer.add_int(self.CommandId)
+        return packer.get_buffer()
+
+class MayhemAvEnum(Command):
+    Name        = "avenum"
+    Description = "look for av / edr processes and drivers"
+    Help        = "avenum"
+    NeedAdmin   = False
+    Mitr        = []
+    Params      = []
+    CommandId   = COMMAND_AVENUM
+
+    def job_generate(self, arguments: dict) -> bytes:
+        packer = Packer()
+        packer.add_int(self.CommandId)
+        return packer.get_buffer()
+
 class MayhemExit(Command):
     Name        = "exit"
     Description = "terminate the agent"
@@ -129,7 +219,11 @@ class Mayhem(AgentType):
     Arch = ["x64"]
     Formats = [{"Name": "Windows Executable", "Extension": "exe"}]
     BuildingConfig = {"Sleep": "10"}
-    Commands = [MayhemShell(), MayhemUpload(), MayhemDownload(), MayhemProcList(), MayhemInjectDLL(), MayhemExit()]
+    Commands = [
+        MayhemShell(), MayhemUpload(), MayhemDownload(), MayhemProcList(),
+        MayhemInjectDLL(), MayhemSysInfo(), MayhemWhoami(), MayhemNetEnum(),
+        MayhemShares(), MayhemLogons(), MayhemAvEnum(), MayhemExit(),
+    ]
 
     #builds the payload that the client requests. For example, if you select exe paylaod from ui, this builds the exe for you.
     def generate (self, config: dict) -> None:
