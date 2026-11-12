@@ -100,7 +100,6 @@ BOOL TransportSend(LPVOID Data, SIZE_T Size, PVOID* RecvData, PSIZE_T RecvSize){
         ok = TRUE;
     }
     else if (!RecvData){
-        pSend(hRequest, NULL, 0, Data, Size, Size, 0);
         ok = TRUE;
     }
 

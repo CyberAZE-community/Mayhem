@@ -68,7 +68,16 @@ class Parser:
 
     def parse_bytes( self ) -> bytes:
 
-        length      = self.parse_int()
+        if len( self.buffer ) < 4:
+            raise ValueError( "not enough bytes for length prefix" )
+
+        length = self.parse_int()
+
+        if length < 0:
+            raise ValueError( "negative length" )
+
+        if length > len( self.buffer ):
+            raise ValueError( "length exceeds remaining buffer" )
 
         buf         = self.buffer[ :length ]
         self.buffer = self.buffer[ length: ]

