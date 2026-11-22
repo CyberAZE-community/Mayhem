@@ -61,6 +61,9 @@ class Parser:
 
     def parse_int( self ) -> int:
 
+        if len( self.buffer ) < 4:
+            raise ValueError( "not enough bytes for int" )
+
         val = struct.unpack( ">i", self.buffer[ :4 ] )
         self.buffer = self.buffer[ 4: ]
 

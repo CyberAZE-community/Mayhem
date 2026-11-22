@@ -91,6 +91,8 @@ BOOL Register(){
     OSVERSIONINFOEXW osver   = { 0 };
     SYSTEM_INFO      sysinfo = { 0 };
 
+    if (!pkg) return FALSE;
+
     // agent id
     PackageAddInt32(pkg, g_AgentID);
 

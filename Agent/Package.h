@@ -11,6 +11,7 @@ typedef struct _PACKAGE {
     UINT32  Size;
     UINT32  CommandID;
     BOOL    Encrypt;
+    BOOL    Valid;
 } PACKAGE, *PPACKAGE;
 
 PPACKAGE PackageCreate(UINT32 CommandID);
