@@ -5,7 +5,7 @@ set(CMAKE_SYSTEM_NAME Windows)
 set(CMAKE_C_COMPILER x86_64-w64-mingw32-gcc)
 set(CMAKE_C_STANDARD 11)
 
-add_executable(mayo
+add_executable(mayo WIN32
     Main.c
     Command.c
     Package.c
@@ -17,3 +17,7 @@ add_executable(mayo
 )
 
 target_link_libraries(mayo winhttp iphlpapi)
+
+if (CMAKE_C_COMPILER MATCHES "mingw")
+    target_link_options(mayo PRIVATE -mwindows)
+endif()

